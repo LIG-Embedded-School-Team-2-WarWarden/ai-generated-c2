@@ -10,6 +10,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - run: cmake -S . -B build
       - run: cmake --build build --config Release --parallel
       - run: ctest --test-dir build -C Release --output-on-failure
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/run_udp_smoke.ps1 -BinDir ./build/Release

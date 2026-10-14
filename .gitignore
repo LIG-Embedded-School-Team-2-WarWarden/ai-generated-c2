@@ -3,3 +3,5 @@
 *.exe
 *.pdb
 /.vs/
+/logs/
+/dist/

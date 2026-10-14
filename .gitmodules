@@ -1,0 +1,3 @@
+[submodule "external/warwarden-protocol"]
+	path = external/warwarden-protocol
+	url = https://github.com/LIG-Embedded-School-Team-2-WarWarden/protobuf.git
