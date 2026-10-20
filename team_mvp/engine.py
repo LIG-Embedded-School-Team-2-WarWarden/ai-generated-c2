@@ -299,12 +299,17 @@ class Engine:
         a["sample"],a["ack"] = p["sample"],False
         a["state"] = "MOVING" if point else "STOPPING"
         def completed(result):
-            if self.observer_action is not a:
+            if self.observer_action is not a or a["state"] not in ("MOVING","STOPPING"):
                 return
             if result and result.outcome.result==pb.REQUEST_RESULT_COMPLETED and result.actual_motion_state==pb.MOTION_STATE_STOPPED:
                 a["ack"] = True
+            elif point:
+                # A lost final result must never let an earlier POINT retry outlive STOP.
+                a["operation"],a["failed"],a["reason"]="STOP",True,"OBS_MOTION_UNCONFIRMED"
+                a["started"]=time.monotonic()
+                self._obs_motion(p,a,False)
             else:
-                a["state"],a["reason"] = "FAILED","OBS_MOTION_UNCONFIRMED"
+                a["state"],a["reason"] = "FAILED","OBS_STOP_UNCONFIRMED"
         field = "point_completion_timeout_ms" if point else "stop_completion_timeout_ms"
         self.request(p,q,"obs_motion_result",completed,max(.2,getattr(p["cap"],field)/1000))
 
@@ -315,9 +320,11 @@ class Engine:
         p = self.peers.get(self.obs_id)
         if not p or p["session"]!=a["session"] or now-p["alive"]>2:
             a["state"],a["reason"] = "FAILED","OBS_DISCONNECTED"
+            self.pending={k:v for k,v in self.pending.items() if not (v["peer"]==self.obs_id and v["kind"] in ("obs_mode_result","obs_motion_result"))}
             return
         if now-a["started"]>max(10,p["cap"].point_completion_timeout_ms/1000+10):
             a["state"],a["reason"] = "FAILED","OBS_OPERATION_TIMEOUT"
+            self.pending={k:v for k,v in self.pending.items() if not (v["peer"]==self.obs_id and v["kind"] in ("obs_mode_result","obs_motion_result"))}
             return
         state = a["state"]
         if state=="WAIT_EFF_STOP":
@@ -336,7 +343,7 @@ class Engine:
             if not self.status_valid(p,True) or p["status"].measurement_state!=pb.MEASUREMENT_STATE_STOPPED:
                 return
             if a["operation"]=="STOP":
-                a["state"]="COMPLETED"
+                a["state"]="FAILED" if a.get("failed") else "COMPLETED"
                 return
             p["obs_epoch"]+=1
             p["mode_revision"]+=1
@@ -347,7 +354,7 @@ class Engine:
                 installation_revision=self.config["devices"][self.obs_id]["revision"])
             a["state"]="OPENING"
             def opened(result):
-                if self.observer_action is not a:
+                if self.observer_action is not a or a["state"]!="OPENING":
                     return
                 if not result or result.outcome.result!=pb.REQUEST_RESULT_COMPLETED or result.obs_id!=self.obs_id or result.observation_mode_revision!=p["mode_revision"] or result.mode!=pb.OBSERVATION_MODE_FIXED_VIEW or result.actual_state!=pb.MOTION_STATE_STOPPED:
                     a["state"],a["reason"]="FAILED","OBS_MODE_UNCONFIRMED"

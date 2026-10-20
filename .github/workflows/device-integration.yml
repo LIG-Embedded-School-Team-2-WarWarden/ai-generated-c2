@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: LIG-Embedded-School-Team-2-WarWarden/firmware
-          ref: c02fdb54b78d285b4de15f06c204f4a0e68a88b6
+          ref: 39887f910afd5b2d1624b0dc6a0fc58644bb5ae5
           submodules: recursive
           path: device-source
       - uses: actions/setup-python@v5
