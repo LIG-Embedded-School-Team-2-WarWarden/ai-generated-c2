@@ -1,6 +1,7 @@
 #include "c2/attack_command_service.hpp"
 
 #include "c2/protocol_validation.hpp"
+#include "c2/sequence.hpp"
 
 #include <limits>
 #include <stdexcept>
@@ -28,11 +29,10 @@ AttackStatusUpdateResult AttackCommandService::update_status(
     const EffectorStatus& status) {
     if (!validate(status).valid()) return AttackStatusUpdateResult::invalid;
     std::lock_guard lock(mutex_);
-    if (status_) {
-        if (status.header.sequence == status_->header.sequence &&
-            status.timestamp_us == status_->timestamp_us)
+    if (status_ && same_sequence_stream(status.header,status_->header)) {
+        if (status.header.sequence == status_->header.sequence)
             return AttackStatusUpdateResult::duplicate;
-        if (status.timestamp_us <= status_->timestamp_us)
+        if (!newer_sequence(status.header.sequence,status_->header.sequence))
             return AttackStatusUpdateResult::out_of_order;
     }
     status_ = status;

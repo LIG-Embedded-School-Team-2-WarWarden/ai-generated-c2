@@ -12,7 +12,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements-team.txt
       - run: cmake -S . -B build
+      - if: runner.os == 'Windows'
+        run: cmake -S . -B build -DC2_BUILD_LIVE=ON
       - run: cmake --build build --config Release --parallel
       - run: ctest --test-dir build -C Release --output-on-failure
       - if: runner.os == 'Windows'

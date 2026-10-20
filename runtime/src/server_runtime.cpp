@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include <utility>
 #include <limits>
+#include <cmath>
+#include <numbers>
 
 namespace c2 {
 ServerRuntime::ServerRuntime(ServerRuntimeConfig config, DatagramSender sender)
@@ -164,6 +166,86 @@ ObservationDispatchResult ServerRuntime::command_observation(
     }
 }
 
+EffectorDispatchResult ServerRuntime::point_effector_angles(
+    const std::uint64_t asset_id, const float pan_deg, const float tilt_deg,
+    const std::uint64_t now_us) {
+    std::lock_guard lifecycle_lock(asset_lifecycle_mutex_);
+    return point_effector_angles_locked(asset_id, pan_deg, tilt_deg, now_us);
+}
+
+EffectorDispatchResult ServerRuntime::point_observed_target(
+    const std::uint64_t asset_id, const std::uint64_t track_id,
+    const float offset_x_m, const float offset_y_m, const float offset_z_m,
+    const std::uint64_t now_us) {
+    std::lock_guard lifecycle_lock(asset_lifecycle_mutex_);
+    const auto track = tracks_.track(track_id, now_us);
+    if (!track || !std::isfinite(offset_x_m) || !std::isfinite(offset_y_m) ||
+        !std::isfinite(offset_z_m)) return DispatchError::command_rejected;
+    const auto observer = registry_.asset(track->observation_asset_id, now_us);
+    if (!observer || observer->role != AssetRole::observation ||
+        observer->session_id != track->observation_session_id ||
+        observer->connection_state != AssetConnectionState::connected)
+        return DispatchError::connection_unavailable;
+    // Enforce capture age as well as the TrackStore's receive-based expiry.
+    const auto& target = track->measurement;
+    if (now_us < target.measurement_time_us ||
+        now_us - target.measurement_time_us >= config_.tracks.validity_us)
+        return DispatchError::command_rejected;
+    const double dx = static_cast<double>(target.x_m) - offset_x_m;
+    const double dy = static_cast<double>(target.y_m) - offset_y_m;
+    const double dz = static_cast<double>(target.z_m) - offset_z_m;
+    const auto horizontal = std::hypot(dx, dy);
+    // Pan is undefined directly above/below the EFF, including coincident points.
+    if (horizontal < 1e-6) return DispatchError::command_rejected;
+    constexpr double to_deg = 180.0 / std::numbers::pi;
+    return point_effector_angles_locked(asset_id,
+        static_cast<float>(std::atan2(dy, dx) * to_deg),
+        static_cast<float>(std::atan2(dz, horizontal) * to_deg), now_us);
+}
+
+EffectorDispatchResult ServerRuntime::point_effector_angles_locked(
+    const std::uint64_t asset_id, const float pan_deg, const float tilt_deg,
+    const std::uint64_t now_us) {
+    const auto asset = registry_.asset(asset_id, now_us);
+    if (!asset || asset->role != AssetRole::effector ||
+        asset->connection_state != AssetConnectionState::connected)
+        return DispatchError::connection_unavailable;
+    if (!(asset->capabilities & capability::effector_point) ||
+        !asset->status_current || !asset->effector_status ||
+        (asset->effector_status->state != EffectorState::standby &&
+         asset->effector_status->state != EffectorState::ready) ||
+        asset->effector_status->error_code != 0 ||
+        asset->effector_status->attack_armed || asset->effector_status->attack_active ||
+        asset->effector_status->automatic_tracking_active ||
+        !std::isfinite(pan_deg) || !std::isfinite(tilt_deg) ||
+        pan_deg < asset->turret_limits.minimum_pan_deg ||
+        pan_deg > asset->turret_limits.maximum_pan_deg ||
+        tilt_deg < asset->turret_limits.minimum_tilt_deg ||
+        tilt_deg > asset->turret_limits.maximum_tilt_deg ||
+        now_us == 0 || now_us > std::numeric_limits<std::uint64_t>::max() -
+            config_.effector_commands.command_validity_us)
+        return DispatchError::command_rejected;
+    for (const auto& pending : command_tracker_.pending_commands())
+        if (pending.key.asset_id == asset_id) return DispatchError::command_rejected;
+    for (const auto& assignment : assignments_.assignments())
+        if (assignment.effector_asset_id == asset_id && assignment.state == AssignmentResult::assigned)
+            return DispatchError::command_rejected;
+    EffectorTurretCommand command{
+        {protocol_version, 1, now_us, ComponentId::command_and_control,
+         ComponentId::effector_asset, asset_id, asset->session_id},
+        1, pan_deg, tilt_deg, now_us + config_.effector_commands.command_validity_us};
+    if (!validate(command).valid()) return DispatchError::command_rejected;
+    effector_identity_.assign(command);
+    auto encoded = protobuf::encode(Envelope{command});
+    if (command_tracker_.track({asset_id, asset->session_id, command.command_id,
+            encoded, asset->command_endpoint, now_us, command.valid_until_us}) != CommandTrackResult::tracked)
+        return DispatchError::command_rejected;
+    if (!send_tracked(encoded, asset->command_endpoint,
+            {asset_id, asset->session_id, command.command_id}, now_us))
+        return DispatchError::delivery_uncertain;
+    return command;
+}
+
 EffectorDispatchResult ServerRuntime::point_effector(
     const std::uint64_t target_id, const std::uint64_t now_us) {
     std::lock_guard lifecycle_lock(asset_lifecycle_mutex_);
@@ -302,6 +384,7 @@ AttackDispatchResult ServerRuntime::attack(
 AttackDispatchResult ServerRuntime::stop_effector(
     const std::uint64_t effector_asset_id, const std::uint64_t now_us) {
     std::lock_guard lifecycle_lock(asset_lifecycle_mutex_);
+    command_tracker_.cancel_asset(effector_asset_id,now_us);
     const auto asset = registry_.asset(effector_asset_id, now_us);
     if (!asset || asset->role != AssetRole::effector)
         return DispatchError::command_rejected;
@@ -311,6 +394,7 @@ AttackDispatchResult ServerRuntime::stop_effector(
 AttackDispatchResult ServerRuntime::emergency_stop_effector(
     const std::uint64_t effector_asset_id, const std::uint64_t now_us) {
     std::lock_guard lifecycle_lock(asset_lifecycle_mutex_);
+    command_tracker_.cancel_asset(effector_asset_id,now_us);
     const auto asset = registry_.asset(effector_asset_id, now_us);
     if (!asset || asset->role != AssetRole::effector)
         return DispatchError::command_rejected;

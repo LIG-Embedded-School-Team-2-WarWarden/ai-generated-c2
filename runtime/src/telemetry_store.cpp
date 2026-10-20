@@ -1,5 +1,6 @@
 #include "c2/telemetry_store.hpp"
 #include "c2/protocol_validation.hpp"
+#include "c2/sequence.hpp"
 #include <stdexcept>
 
 namespace c2 {
@@ -23,10 +24,10 @@ TelemetryUpdateResult TelemetryStore::update(const ObservationStatus& value) {
 TelemetryUpdateResult TelemetryStore::update(const EffectorStatus& value) {
     if (!validate(value).valid()) return TelemetryUpdateResult::invalid;
     std::lock_guard lock(mutex_);
-    if (effector_) {
-        if (value.header.sequence == effector_->header.sequence && value.timestamp_us == effector_->timestamp_us)
+    if (effector_ && same_sequence_stream(value.header,effector_->header)) {
+        if (value.header.sequence == effector_->header.sequence)
             return TelemetryUpdateResult::duplicate;
-        if (value.timestamp_us <= effector_->timestamp_us) return TelemetryUpdateResult::out_of_order;
+        if (!newer_sequence(value.header.sequence,effector_->header.sequence)) return TelemetryUpdateResult::out_of_order;
     }
     effector_ = value;
     return TelemetryUpdateResult::stored;

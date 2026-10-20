@@ -203,6 +203,16 @@ std::size_t CommandTracker::pending_count() const {
     return pending_.size();
 }
 
+void CommandTracker::cancel_asset(std::uint64_t asset_id, std::uint64_t now_us) {
+    std::lock_guard lock(mutex_);
+    for(auto it=pending_.begin();it!=pending_.end();) {
+        if(it->first.asset_id==asset_id) {
+            record_outcome_locked({it->first,CommandTerminalState::cancelled_by_stop,now_us});
+            it=pending_.erase(it);
+        }else ++it;
+    }
+}
+
 std::vector<CommandOutcome> CommandTracker::outcomes() const {
     std::lock_guard lock(mutex_);
     return {outcomes_.begin(), outcomes_.end()};

@@ -63,6 +63,11 @@ InboundResult AssetMessageRouter::receive(const Envelope& envelope, const Endpoi
                         kind, &message.header, result, received_at_us);
                     return InboundResult::rejected;
                 }
+                // Registered-device validation is authoritative. Do not let duplicates
+                // refresh the legacy monitor or leak into a second acceptance decision.
+                if(result==AssetRegistryResult::stored)
+                    (void)legacy_.receive(envelope,received_at_us);
+                return InboundResult::accepted;
             } else if constexpr (std::is_same_v<T, AssetPose>) {
                 const auto result = registry_.update_pose(
                     message, source, received_at_us);

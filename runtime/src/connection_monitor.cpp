@@ -1,6 +1,7 @@
 #include "c2/connection_monitor.hpp"
 
 #include "c2/protocol_validation.hpp"
+#include "c2/sequence.hpp"
 
 #include <stdexcept>
 
@@ -20,15 +21,12 @@ HeartbeatUpdateResult ConnectionMonitor::observe(
     if (destination == nullptr) return HeartbeatUpdateResult::invalid;
     if (*destination) {
         auto& current = **destination;
-        if (received_at_us < current.received_at_us)
-            return HeartbeatUpdateResult::out_of_order;
-        if (!disconnected(current, received_at_us)) {
-            if (heartbeat.header.sequence == current.heartbeat.header.sequence &&
-                heartbeat.timestamp_us == current.heartbeat.timestamp_us)
+        if (same_sequence_stream(heartbeat.header,current.heartbeat.header)) {
+            if (heartbeat.header.sequence == current.heartbeat.header.sequence)
                 return HeartbeatUpdateResult::duplicate;
-            if (heartbeat.timestamp_us <= current.heartbeat.timestamp_us)
+            if (!newer_sequence(heartbeat.header.sequence,current.heartbeat.header.sequence))
                 return HeartbeatUpdateResult::out_of_order;
-            const auto synchronized = !current.pose_resynchronization_required;
+            const auto synchronized = !current.pose_resynchronization_required&&!disconnected(current,received_at_us);
             current = {heartbeat, received_at_us, !synchronized};
             return HeartbeatUpdateResult::stored;
         }

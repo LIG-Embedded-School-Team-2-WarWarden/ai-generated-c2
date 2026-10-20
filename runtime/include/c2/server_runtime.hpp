@@ -19,6 +19,7 @@
 #include "c2/telemetry_store.hpp"
 #include "c2/track_store.hpp"
 #include "c2/udp_transport.hpp"
+#include <memory>
 
 #include <cstddef>
 #include <cstdint>
@@ -72,6 +73,12 @@ public:
         float pan_deg, float tilt_deg, std::uint64_t now_us);
     [[nodiscard]] EffectorDispatchResult point_effector(
         std::uint64_t target_id, std::uint64_t now_us);
+    [[nodiscard]] EffectorDispatchResult point_effector_angles(
+        std::uint64_t asset_id, float pan_deg, float tilt_deg, std::uint64_t now_us);
+    // Fixed, aligned axes; offsets and observations must use the same metre frame.
+    [[nodiscard]] EffectorDispatchResult point_observed_target(
+        std::uint64_t asset_id, std::uint64_t track_id,
+        float offset_x_m, float offset_y_m, float offset_z_m, std::uint64_t now_us);
     [[nodiscard]] AttackDispatchResult attack(
         AttackAction action, std::uint64_t target_id,
         std::uint32_t duration_ms, std::uint64_t now_us);
@@ -108,6 +115,8 @@ public:
     [[nodiscard]] std::vector<ErrorReport> errors() const;
 
 private:
+    EffectorDispatchResult point_effector_angles_locked(
+        std::uint64_t asset_id, float pan_deg, float tilt_deg, std::uint64_t now_us);
     [[nodiscard]] std::optional<DispatchError> connection_error(
         ComponentId source, std::uint64_t now_us);
     template <typename Message>

@@ -2,33 +2,44 @@ param([string]$BinDir = 'build/live/Release')
 $ErrorActionPreference = 'Stop'
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
-    $c2PackageDir = Join-Path (Get-Location) 'dist/windows'
-    New-Item -ItemType Directory -Force $c2PackageDir | Out-Null
-    foreach ($c2Executable in @('c2_dashboard.exe', 'c2_server.exe', 'dummy_observation.exe', 'dummy_effector.exe')) {
+    # A new folder prevents obsolete private codecs from leaking into a new package.
+    $c2PackageName = 'team-mvp-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6)
+    $c2PackageDir = Join-Path (Get-Location) ('dist/' + $c2PackageName)
+    New-Item -ItemType Directory -Path $c2PackageDir | Out-Null
+    foreach ($c2Executable in @('c2_mvp_console.exe','c2_detector_worker.exe')) {
         $c2Source = Join-Path $BinDir $c2Executable
         if (-not (Test-Path -LiteralPath $c2Source)) { throw "Build first: missing $c2Source" }
-        Copy-Item -LiteralPath $c2Source -Destination $c2PackageDir -Force
+        Copy-Item -LiteralPath $c2Source -Destination $c2PackageDir
     }
-    Copy-Item -LiteralPath docs/asset-integration.md -Destination $c2PackageDir -Force
-    Copy-Item -LiteralPath external/warwarden-protocol/proto/mfs/icd/v3/mfs.proto -Destination $c2PackageDir -Force
-    Copy-Item -LiteralPath runtime/LICENSE -Destination (Join-Path $c2PackageDir 'LICENSE-runtime.txt') -Force
-    Copy-Item -LiteralPath external/warwarden-protocol/LICENSE -Destination (Join-Path $c2PackageDir 'LICENSE-protocol.txt') -Force
+    foreach ($c2Subdir in @('team_mvp','configs','scripts','external/warwarden-protocol/python/mfs/icd/v1','external/warwarden-protocol/proto/mfs/icd/v1')) {
+        New-Item -ItemType Directory -Force (Join-Path $c2PackageDir $c2Subdir) | Out-Null
+    }
+    foreach ($c2File in Get-ChildItem team_mvp -File -Filter '*.py') {
+        Copy-Item -LiteralPath $c2File.FullName -Destination (Join-Path $c2PackageDir 'team_mvp')
+    }
+    foreach ($c2File in @('scripts/setup-team.ps1','scripts/run_team_mvp.py','scripts/team_dummy.py','configs/team-demo.json','requirements-team.txt','external/warwarden-protocol/python/mfs/icd/v1/mfs_pb2.py','external/warwarden-protocol/proto/mfs/icd/v1/mfs.proto','external/warwarden-protocol/TEAM_ICD.md')) {
+        Copy-Item -LiteralPath $c2File -Destination (Join-Path $c2PackageDir $c2File)
+    }
+    Copy-Item docs/console-mvp.md (Join-Path $c2PackageDir 'console-mvp.md')
+    Copy-Item vendor/lidar/ORIGIN.md (Join-Path $c2PackageDir 'ORIGIN-lidar.md')
+    Copy-Item external/warwarden-protocol/LICENSE (Join-Path $c2PackageDir 'LICENSE-protocol.txt')
     $c2Revision = git rev-parse HEAD
+    $c2ProtocolRevision = git -C external/warwarden-protocol rev-parse HEAD
     @"
-AI Generated C2 / Windows x64 / revision $c2Revision
-
-Run from PowerShell in this extracted folder:
-  .\c2_dashboard.exe --bind 0.0.0.0 --asset-port 5000
-
-Start peers in separate terminals (replace 127.0.0.1 with C2 PC IPv4 for remote peers):
-  .\dummy_observation.exe --asset-id 101 --listen-port 5101 --c2-address 127.0.0.1 --c2-port 5000
-  .\dummy_effector.exe --asset-id 201 --listen-port 6001 --c2-address 127.0.0.1 --c2-port 5000
-
-Read asset-integration.md before connecting a real board. mfs.proto is the pinned wire contract.
-May require the Microsoft Visual C++ x64 runtime installed with Visual Studio or its redistributable.
-No firewall configuration is changed by this package.
-"@ | Set-Content -LiteralPath (Join-Path $c2PackageDir 'RUNME.txt') -Encoding utf8
-    $c2PackageFiles = @(Get-ChildItem -LiteralPath $c2PackageDir -File | ForEach-Object FullName)
-    Compress-Archive -LiteralPath $c2PackageFiles -DestinationPath dist/ai-generated-c2-windows-x64.zip -Force
-    Write-Output (Join-Path (Get-Location) 'dist/ai-generated-c2-windows-x64.zip')
+Team ICD 1.0 educational pointer MVP. C2 revision $c2Revision.
+Shared protocol revision $c2ProtocolRevision.
+Python 3.10+ and the Microsoft Visual C++ x64 runtime are required.
+From this extracted folder, run once:
+  ./scripts/setup-team.ps1
+Then in three terminals:
+  ./c2_mvp_console.exe
+  ./.venv-team/Scripts/python.exe scripts/team_dummy.py OBS
+  ./.venv-team/Scripts/python.exe scripts/team_dummy.py EFF
+Console: status, targets, aim 201, status, stop 201, quit.
+Default configuration is synthetic loopback only. See console-mvp.md for real device prerequisites.
+The shared schema is pinned from the public protobuf repository.
+"@ | Set-Content (Join-Path $c2PackageDir 'RUNME.txt') -Encoding utf8
+    $c2Zip = Join-Path (Get-Location) ('dist/' + $c2PackageName + '.zip')
+    Compress-Archive -Path (Join-Path $c2PackageDir '*') -DestinationPath $c2Zip
+    Write-Output $c2Zip
 } finally { Pop-Location }

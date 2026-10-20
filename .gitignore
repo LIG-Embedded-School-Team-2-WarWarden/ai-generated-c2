@@ -5,3 +5,5 @@
 /.vs/
 /logs/
 /dist/
+__pycache__/
+/.venv-team/

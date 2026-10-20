@@ -27,6 +27,7 @@ const char* outcome(c2::CommandTerminalState state) {
     case c2::CommandTerminalState::completion_timeout: return "COMPLETION TIMEOUT";
     case c2::CommandTerminalState::session_ended: return "SESSION ENDED";
     case c2::CommandTerminalState::cancelled_before_send: return "CANCELLED";
+    case c2::CommandTerminalState::cancelled_by_stop: return "CANCELLED_BY_STOP";
     }
     return "UNKNOWN";
 }

@@ -59,6 +59,7 @@ std::string_view outcome_name(const c2::CommandTerminalState state) {
         case c2::CommandTerminalState::completion_timeout: return "COMPLETION_TIMEOUT";
         case c2::CommandTerminalState::session_ended: return "SESSION_ENDED";
         case c2::CommandTerminalState::cancelled_before_send: return "CANCELLED_BEFORE_SEND";
+        case c2::CommandTerminalState::cancelled_by_stop: return "CANCELLED_BY_STOP";
     }
     return "UNKNOWN";
 }

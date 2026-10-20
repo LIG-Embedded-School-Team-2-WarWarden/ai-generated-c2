@@ -60,6 +60,7 @@ enum class CommandTerminalState {
     completion_timeout,
     session_ended,
     cancelled_before_send,
+    cancelled_by_stop,
 };
 
 enum class CommandDeliveryState { awaiting_send, sent, uncertain };
@@ -104,6 +105,7 @@ public:
     [[nodiscard]] std::vector<PendingCommandSnapshot> pending_commands() const;
     void record_send(const CommandKey& key, bool succeeded, std::uint64_t now_us);
     bool cancel_before_send(const CommandKey& key, std::uint64_t now_us);
+    void cancel_asset(std::uint64_t asset_id, std::uint64_t now_us);
     [[nodiscard]] std::vector<CommandOutcome> outcomes() const;
     std::size_t end_session(
         std::uint64_t asset_id, std::uint64_t session_id,

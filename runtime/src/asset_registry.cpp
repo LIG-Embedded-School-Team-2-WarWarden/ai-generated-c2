@@ -1,6 +1,7 @@
 #include "c2/asset_registry.hpp"
 
 #include "c2/protocol_validation.hpp"
+#include "c2/sequence.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -11,6 +12,7 @@ namespace {
 bool same_endpoint(const Endpoint& left, const Endpoint& right) noexcept {
     return left.address == right.address && left.port == right.port;
 }
+
 
 std::uint64_t deadline_after_ms(
     const std::uint64_t now_us, const std::uint64_t duration_ms) noexcept {
@@ -133,10 +135,9 @@ AssetRegistryResult AssetRegistry::observe_heartbeat(
     if (result != AssetRegistryResult::stored) return result;
     auto& entry = entries_.at(heartbeat_value.header.asset_id);
     if (entry.heartbeat) {
-        if (heartbeat_value.header.sequence == entry.heartbeat->header.sequence &&
-            heartbeat_value.timestamp_us == entry.heartbeat->timestamp_us)
+        if (heartbeat_value.header.sequence == entry.heartbeat->header.sequence)
             return AssetRegistryResult::duplicate;
-        if (heartbeat_value.timestamp_us <= entry.heartbeat->timestamp_us)
+        if (!newer_sequence(heartbeat_value.header.sequence, entry.heartbeat->header.sequence))
             return AssetRegistryResult::stale;
     }
     entry.heartbeat = heartbeat_value;
@@ -194,10 +195,9 @@ AssetRegistryResult AssetRegistry::update_effector_status(
     if (entry.registration.role != AssetRole::effector)
         return AssetRegistryResult::role_mismatch;
     if (entry.effector_status) {
-        if (status.header.sequence == entry.effector_status->header.sequence &&
-            status.timestamp_us == entry.effector_status->timestamp_us)
+        if (status.header.sequence == entry.effector_status->header.sequence)
             return AssetRegistryResult::duplicate;
-        if (status.timestamp_us <= entry.effector_status->timestamp_us)
+        if (!newer_sequence(status.header.sequence, entry.effector_status->header.sequence))
             return AssetRegistryResult::stale;
     }
     entry.effector_status = status;
