@@ -26,6 +26,7 @@ class Engine:
         self.boot = uid()
         self.lock = threading.RLock()
         self.peers, self.pending, self.controls = {}, {}, {}
+        self.observer_action = None
         self.registrations = {}
         self.retired_boots = collections.defaultdict(set)
         self.events = collections.deque(maxlen=256)
@@ -98,7 +99,7 @@ class Engine:
             p = dict(id=r.device_id,boot=r.boot_id,session=uid(),address=(address[0],r.receive_port),
                      hb=0,alive=time.monotonic(),sample=0,status=None,status_received=0,
                      cap=None,installed=False,install_result=False,install_sent=False,
-                     mode_sent=False,mode=False,collection=None,collecting=False,poses={},
+                     mode_sent=False,mode=False,mode_revision=1,obs_epoch=1,obs_sequence=0,obs_session=None,collection=None,collecting=False,poses={},
                      mapping=None,epoch=0,disconnected=False)
             self.peers[r.device_id] = p
         from .contract import outcome
@@ -209,6 +210,7 @@ class Engine:
             body = pb.ObsModeCommand(request_id=uid(),obs_control_session_id=uid(),
                 control_epoch=1,observation_mode_revision=1,mode=pb.OBSERVATION_MODE_FIXED_VIEW,
                 installation_revision=cfg["revision"])
+            p["obs_session"] = body.obs_control_session_id
             def mode(result):
                 if (result and result.outcome.result == pb.REQUEST_RESULT_COMPLETED and result.obs_id == p["id"]
                     and result.observation_mode_revision == 1 and result.mode == pb.OBSERVATION_MODE_FIXED_VIEW
@@ -218,8 +220,10 @@ class Engine:
                     self.collect(True)
             self.request(p,body,"obs_mode_result",mode)
 
-    def collect(self,start):
+    def collect(self,start,_observer=False):
         with self.lock:
+            if not _observer and self.observer_action and self.observer_action["state"] not in ("COMPLETED","FAILED"):
+                raise ValueError("OBS operation pending; use obs stop to cancel")
             p = self.peers.get(self.obs_id)
             if not p or not p["installed"] or not p["mode"]:
                 raise ValueError("OBS installation/mode not ready")
@@ -249,6 +253,126 @@ class Engine:
                 p["measurement_result"] = "COMPLETED" if result and result.outcome.result == pb.REQUEST_RESULT_COMPLETED and result.actual_state == expected else "UNCONFIRMED"
             self.request(p,body,"measurement_result",applied)
 
+    def obs_point(self,pan,tilt):
+        """Stop EFF/collection, move OBS, confirm stopped feedback, then collect."""
+        with self.lock:
+            p = self.peers.get(self.obs_id)
+            if not p or not p["installed"] or not p["mode"] or not self.status_valid(p,True):
+                raise ValueError("OBS not ready with current stopped feedback")
+            cap = p["cap"]
+            if not finite(pan,tilt) or not cap.pan_min_deg <= pan <= cap.pan_max_deg or not cap.tilt_min_deg <= tilt <= cap.tilt_max_deg:
+                raise ValueError("OBS angles outside reported limits")
+            if not cap.HasField("point_completion_timeout_ms") or not 0 < cap.point_completion_timeout_ms <= 60000:
+                raise ValueError("OBS completion timeout missing")
+            if self.observer_action and self.observer_action["state"] not in ("COMPLETED","FAILED"):
+                raise ValueError("OBS operation pending")
+            if any(v["peer"]==self.obs_id for v in self.pending.values()):
+                raise ValueError("OBS request pending")
+            self.stop_all("OBS_MOVE")
+            self.cloud.fail("OBS_MOVING")
+            self.previous = None
+            self.observer_action = dict(state="WAIT_EFF_STOP",session=p["session"],pan=pan,tilt=tilt,
+                started=time.monotonic(),reason="",operation="POINT")
+
+    def obs_stop(self):
+        with self.lock:
+            p = self.peers.get(self.obs_id)
+            if not p or not p["installed"] or not p["mode"]:
+                raise ValueError("OBS not installed/mode ready")
+            self.stop_all("OBS_STOP")
+            self.pending = {k:v for k,v in self.pending.items() if not (v["peer"]==self.obs_id and v["kind"] in ("obs_motion_result","obs_mode_result"))}
+            self.cloud.fail("OBS_STOP")
+            self.previous = None
+            self.observer_action = dict(state="STOPPING",session=p["session"],started=time.monotonic(),reason="",operation="STOP")
+            self._obs_motion(p,self.observer_action,False)
+
+    def _obs_motion(self,p,a,point):
+        p["obs_sequence"] += 1
+        q = pb.ObsMotionCommand(request_id=uid(),obs_control_session_id=p["obs_session"],control_epoch=p["obs_epoch"],
+            command_sequence=p["obs_sequence"],operation=pb.ObsMotionCommand.OPERATION_POINT if point else pb.ObsMotionCommand.OPERATION_STOP,issued_at=utc())
+        if point:
+            q.pan_deg,q.tilt_deg = a["pan"],a["tilt"]
+            q.purpose = pb.ObsMotionCommand.PURPOSE_FIXED_POSITION
+            q.installation_revision = self.config["devices"][self.obs_id]["revision"]
+            q.observation_mode_revision = p["mode_revision"]
+            q.expires_at = (dt.datetime.now(dt.timezone.utc)+dt.timedelta(seconds=1)).isoformat(timespec="milliseconds").replace("+00:00","Z")
+        a["sample"],a["ack"] = p["sample"],False
+        a["state"] = "MOVING" if point else "STOPPING"
+        def completed(result):
+            if self.observer_action is not a:
+                return
+            if result and result.outcome.result==pb.REQUEST_RESULT_COMPLETED and result.actual_motion_state==pb.MOTION_STATE_STOPPED:
+                a["ack"] = True
+            else:
+                a["state"],a["reason"] = "FAILED","OBS_MOTION_UNCONFIRMED"
+        field = "point_completion_timeout_ms" if point else "stop_completion_timeout_ms"
+        self.request(p,q,"obs_motion_result",completed,max(.2,getattr(p["cap"],field)/1000))
+
+    def update_observer(self,now):
+        a = self.observer_action
+        if not a or a["state"] in ("COMPLETED","FAILED"):
+            return
+        p = self.peers.get(self.obs_id)
+        if not p or p["session"]!=a["session"] or now-p["alive"]>2:
+            a["state"],a["reason"] = "FAILED","OBS_DISCONNECTED"
+            return
+        if now-a["started"]>max(10,p["cap"].point_completion_timeout_ms/1000+10):
+            a["state"],a["reason"] = "FAILED","OBS_OPERATION_TIMEOUT"
+            return
+        state = a["state"]
+        if state=="WAIT_EFF_STOP":
+            if any(c["state"]!="STOPPED" for c in self.controls.values()):
+                return
+            a["sample"] = p["sample"]
+            if p["collecting"]:
+                self.collect(False,_observer=True)
+            a["state"] = "WAIT_COLLECTION_STOP"
+        elif state=="WAIT_COLLECTION_STOP":
+            if any(v["peer"]==self.obs_id and v["kind"]=="measurement_result" for v in self.pending.values()):
+                return
+            if p.get("measurement_result")=="UNCONFIRMED":
+                a["state"],a["reason"] = "FAILED","COLLECTION_STOP_UNCONFIRMED"
+                return
+            if not self.status_valid(p,True) or p["status"].measurement_state!=pb.MEASUREMENT_STATE_STOPPED:
+                return
+            if a["operation"]=="STOP":
+                a["state"]="COMPLETED"
+                return
+            p["obs_epoch"]+=1
+            p["mode_revision"]+=1
+            p["obs_sequence"]=0
+            p["obs_session"]=uid()
+            q=pb.ObsModeCommand(request_id=uid(),obs_control_session_id=p["obs_session"],control_epoch=p["obs_epoch"],
+                observation_mode_revision=p["mode_revision"],mode=pb.OBSERVATION_MODE_FIXED_VIEW,
+                installation_revision=self.config["devices"][self.obs_id]["revision"])
+            a["state"]="OPENING"
+            def opened(result):
+                if self.observer_action is not a:
+                    return
+                if not result or result.outcome.result!=pb.REQUEST_RESULT_COMPLETED or result.obs_id!=self.obs_id or result.observation_mode_revision!=p["mode_revision"] or result.mode!=pb.OBSERVATION_MODE_FIXED_VIEW or result.actual_state!=pb.MOTION_STATE_STOPPED:
+                    a["state"],a["reason"]="FAILED","OBS_MODE_UNCONFIRMED"
+                    return
+                p["mode_applied"]=stamp(result.mode_applied_at)
+                self._obs_motion(p,a,True)
+            self.request(p,q,"obs_mode_result",opened)
+        elif state in ("MOVING","STOPPING"):
+            if not a["ack"] or p["sample"]<=a["sample"] or not self.status_valid(p,True):
+                return
+            if state=="STOPPING":
+                if any(v["peer"]==self.obs_id and v["kind"]=="measurement_result" for v in self.pending.values()):
+                    return
+                if p["status"].measurement_state!=pb.MEASUREMENT_STATE_STOPPED:
+                    self.collect(False,_observer=True)
+                a["state"]="WAIT_COLLECTION_STOP"
+            else:
+                self.collect(True,_observer=True)
+                a["state"]="COLLECTING"
+        elif state=="COLLECTING":
+            if p.get("measurement_result")=="UNCONFIRMED":
+                a["state"],a["reason"]="FAILED","COLLECTION_START_UNCONFIRMED"
+            elif p["collecting"] and p["status"].measurement_state==pb.MEASUREMENT_STATE_COLLECTING:
+                a["state"]="COMPLETED"
+
     def trust_clock(self,device,mapping):
         """Operator supplied, verified mapping tied to this exact connection and boot."""
         with self.lock:
@@ -259,14 +383,31 @@ class Engine:
                 raise ValueError("clock evidence/uncertainty required")
             p["mapping"] = dict(mapping)
 
+    def trust_acquisition_profile(self,device,profile):
+        """Bind externally measured sensor evidence to the currently connected process."""
+        with self.lock:
+            p=self.peers[device]
+            if profile["sensor_profile"]!=self.config["devices"][device]["profile"]:
+                raise ValueError("sensor profile mismatch")
+            start,end=stamp(profile["valid_from"]),stamp(profile["valid_until"])
+            if not start<=time.time()<end:
+                raise ValueError("acquisition evidence expired/not active")
+            mapping={k:profile[k] for k in ("id","evidence","offset_seconds","uncertainty_ms","sync_type","sync_state","frame_protocol_version")}
+            if not isinstance(mapping["id"],str) or not 0<len(mapping["id"])<=64 or any(type(mapping[k]) is not int or not 0<=mapping[k]<=255 for k in ("sync_type","sync_state","frame_protocol_version")):
+                raise ValueError("invalid mapping ID or SDK time identifiers")
+            if any(type(mapping[k]) not in (int,float) or not finite(mapping[k]) for k in ("offset_seconds","uncertainty_ms")) or mapping["uncertainty_ms"]<1:
+                raise ValueError("measured finite offset/uncertainty required")
+            mapping.update(boot_id=p["boot"],connection_session_id=p["session"],valid_from=start,valid_until=end)
+            self.trust_clock(device,mapping)
+
     def verify_frame(self,p,c):
         cfg = self.config["devices"][p["id"]]
-        if c.installation_revision != cfg["revision"] or c.observation_mode_revision != 1 or c.sensor_data_profile_id != cfg["profile"]:
+        if c.installation_revision != cfg["revision"] or c.observation_mode_revision != p["mode_revision"] or c.sensor_data_profile_id != cfg["profile"]:
             raise ValueError("frame installation/mode/profile mismatch")
         pose = p["poses"].get(c.pose_id)
         try:
             if not pose or not (pose.obs_id == p["id"] and pose.collection_session_id == p["collection"]
-                and pose.installation_revision == c.installation_revision and pose.observation_mode_revision == 1
+                and pose.installation_revision == c.installation_revision and pose.observation_mode_revision == p["mode_revision"]
                 and pose.pose_valid and pose.pan_measured and pose.tilt_measured
                 and pose.HasField("pan_deg") and pose.HasField("tilt_deg")
                 and finite(pose.pan_deg,pose.tilt_deg)
@@ -284,6 +425,8 @@ class Engine:
                                sync_type=2,sync_state=1,frame_protocol_version=3)
             if not mapping or c.clock_mapping_id != mapping["id"]:
                 return False
+            if "valid_until" in mapping and not mapping["valid_from"]<=start<=end<=time.time()<=mapping["valid_until"]:
+                return False
             if (c.sdk_time.sync_type,c.sdk_time.sync_state,c.sdk_time.frame_protocol_version) != (mapping["sync_type"],mapping["sync_state"],mapping["frame_protocol_version"]):
                 return False
             if not c.HasField("clock_uncertainty_ms") or not finite(c.clock_uncertainty_ms) or not mapping["uncertainty_ms"] <= c.clock_uncertainty_ms <= self.config["max_clock_uncertainty_ms"]:
@@ -300,6 +443,8 @@ class Engine:
             return
         request = pending["body"]
         if kind == "control_result" and (b.active_control_session_id != request.control_session_id or b.control_epoch != request.control_epoch):
+            return
+        if kind == "obs_motion_result" and (b.obs_id != p["id"] or (b.obs_control_session_id,b.control_epoch,b.command_sequence) != (request.obs_control_session_id,request.control_epoch,request.command_sequence)):
             return
         if kind == "pointing_result" and (b.control_session_id,b.control_epoch,b.command_sequence) != (request.control_session_id,request.control_epoch,request.command_sequence):
             return
@@ -339,6 +484,9 @@ class Engine:
 
     def latest(self):
         r = self.cloud.result
+        mapping=self.peers.get(self.obs_id,{}).get("mapping")
+        if mapping and "valid_until" in mapping and time.time()>mapping["valid_until"]:
+            raise ValueError("acquisition evidence expired")
         if self.cloud.state != "CURRENT" or not r or not r["verified"]:
             raise ValueError("no verified current observation")
         if time.monotonic()-r["received"] > 1 or not 0 <= time.time()-stamp(r["meta"].captured_start_at) <= 1:
@@ -522,6 +670,7 @@ class Engine:
             self.cloud.fail("FRAME_INCOMPLETE")
         for device,c in list(self.controls.items()):
             self.update_control(device,c,now)
+        self.update_observer(now)
 
     def snapshot(self):
         with self.lock:
@@ -541,7 +690,7 @@ class Engine:
                 for key,p in self.peers.items()},
                 observation=state,frame=result["meta"].frame_id if result else None,
                 objects=result["objects"] if result and state in ("CURRENT","DISPLAY_ONLY") else [],
-                controls={k:dict(v) for k,v in self.controls.items()},pending=len(self.pending))
+                controls={k:dict(v) for k,v in self.controls.items()},observer_action=dict(self.observer_action) if self.observer_action else None,pending=len(self.pending))
 
     def run(self):
         while self.running:
@@ -568,6 +717,8 @@ class Engine:
 
     def close(self):
         with self.lock:
+            if self.observer_action and self.observer_action["state"] not in ("COMPLETED","FAILED"):
+                self.obs_stop()
             self.stop_all("SHUTDOWN")
         deadline = time.monotonic()+2
         while time.monotonic() < deadline:
@@ -578,7 +729,7 @@ class Engine:
         with self.lock:
             p = self.peers.get(self.obs_id)
             if p and p["collecting"]:
-                self.collect(False)
+                self.collect(False,_observer=True)
         deadline = time.monotonic()+1
         while self.pending and time.monotonic() < deadline:
             time.sleep(.02)

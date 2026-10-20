@@ -41,6 +41,31 @@ quit
 [실행 방법과 장비 연결 조건](docs/console-mvp.md), [ICD 변경 대응표](docs/team-icd-migration.md),
 [공용 스키마·생성 방법](external/warwarden-protocol/TEAM_ICD.md)을 참고하세요.
 
+## OBS CLI 조작
+
+Python 더미와 native firmware `mfs_obs`/`mfs_eff` 모두 같은 명령을 사용합니다.
+
+```text
+obs point 10 5
+obs status
+obs point 0 0
+obs status
+targets
+aim 201
+stop 201
+obs stop
+```
+
+`obs point`는 **EFF 지향 정지 확인 → 수집 중지 확인 → OBS 이동 → 실측 정지 확인 → 새 세션으로 수집**을
+순서대로 진행합니다. `obs status`의 operation.state가 COMPLETED인지 확인합니다.
+`obs stop`은 진행 중인 OBS 이동을 취소하고 정지·수집 중지를 요청합니다.
+이동 후 EFF aim은 자동으로 다시 시작하지 않습니다.
+현재 자동 aim은 OBS 실측 pan/tilt=0 고정 관측만 허용하므로, 다른 OBS 각도의 결과는 DISPLAY_ONLY입니다.
+
+실물의 검증된 시간·노출 설정은 firmware의 `--acquisition-profile`과 C2 콘솔의
+`clock-profile 101 profile.json`에 같은 파일을 사용합니다. 실제 값·증빙·유효기간이 필요하며,
+설정 파일을 읽었다는 이유만으로 동기화나 자세를 임의로 인정하지 않습니다.
+
 ## 구성과 검증
 
 - `team_mvp/engine.py`: 등록·설치·수집·제어 세션, Heartbeat/상태 순번, 재전송, aim/stop.

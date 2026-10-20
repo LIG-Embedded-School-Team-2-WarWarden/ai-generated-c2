@@ -140,9 +140,30 @@ class Peer:
                 active_installation_revision=self.revision)
         elif kind == "obs_mode_command" and self.role=="OBS":
             self.mode_revision = b.observation_mode_revision
+            self.control,self.epoch,self.sequence,self.gate = b.obs_control_session_id,b.control_epoch,0,True
             response = pb.ObsModeResult(outcome=outcome(b.request_id),obs_id=self.device,
                 observation_mode_revision=self.mode_revision,mode=b.mode,
                 actual_state=pb.MOTION_STATE_STOPPED,mode_applied_at=utc())
+        elif kind == "obs_motion_command" and self.role=="OBS":
+            reason=None
+            if b.obs_control_session_id!=self.control or b.control_epoch!=self.epoch or b.command_sequence<=self.sequence:
+                reason=pb.REASON_CODE_STALE_COMMAND
+            elif b.operation==pb.ObsMotionCommand.OPERATION_POINT:
+                if self.collection or not self.gate:
+                    reason=pb.REASON_CODE_BUSY
+                elif not b.HasField("pan_deg") or not b.HasField("tilt_deg") or not -90<=b.pan_deg<=90 or not -45<=b.tilt_deg<=45:
+                    reason=pb.REASON_CODE_OUT_OF_RANGE
+                elif stamp(b.expires_at)<=time.time():
+                    reason=pb.REASON_CODE_EXPIRED_COMMAND
+            if reason is None:
+                self.sequence=b.command_sequence
+                if b.operation==pb.ObsMotionCommand.OPERATION_POINT:
+                    self.pan,self.tilt=b.pan_deg,b.tilt_deg
+                elif b.operation==pb.ObsMotionCommand.OPERATION_STOP:
+                    self.gate=False
+            response=pb.ObsMotionResult(outcome=outcome(b.request_id,pb.REQUEST_RESULT_REJECTED if reason else pb.REQUEST_RESULT_COMPLETED,reason),
+                obs_id=self.device,obs_control_session_id=b.obs_control_session_id,control_epoch=b.control_epoch,
+                command_sequence=b.command_sequence,actual_motion_state=pb.MOTION_STATE_STOPPED)
         elif kind == "measurement_command" and self.role=="OBS":
             self.collection = b.collection_session_id if b.operation==pb.MeasurementCommand.OPERATION_START else None
             response = pb.MeasurementResult(outcome=outcome(b.request_id),
@@ -199,7 +220,7 @@ class Peer:
         at = math.floor((time.time()-.003)*1000)/1000
         pose = pb.ObsPose(obs_id=self.device,pose_id=uid(),captured_at=iso(at),
             observation_mode_revision=self.mode_revision,installation_revision=self.revision,
-            pan_deg=0,tilt_deg=0,pan_measured=True,tilt_measured=True,
+            pan_deg=self.pan,tilt_deg=self.tilt,pan_measured=True,tilt_measured=True,
             motion_state=pb.MOTION_STATE_STOPPED,pose_valid=True,collection_session_id=self.collection)
         self.send(pose)
         chunks = []

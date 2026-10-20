@@ -105,6 +105,30 @@ class Integration(unittest.TestCase):
         self.assertEqual(len(ids),len(set(ids)))
         self.stop()
 
+    def test_verified_profile_session_binding_and_expiry(self):
+        with self.engine.lock:
+            profile=dict(id="synthetic-clock-v1",evidence="test measured evidence",sensor_profile="synthetic-organized-v1",
+                valid_from="1970-01-01T00:00:00.000Z",valid_until="2099-01-01T00:00:00.000Z",
+                offset_seconds=0,uncertainty_ms=1,sync_type=2,sync_state=1,frame_protocol_version=3)
+            self.engine.trust_acquisition_profile("101",profile)
+            peer=self.engine.peers["101"]
+            self.assertEqual(peer["mapping"]["connection_session_id"],peer["session"])
+            peer["mapping"]["valid_until"]=time.time()-1
+            with self.assertRaises(ValueError):self.engine.latest()
+            profile["valid_until"]="1970-01-01T00:00:00.000Z"
+            with self.assertRaises(ValueError):self.engine.trust_acquisition_profile("101",profile)
+
+    def test_python_dummy_observer_cli_move_and_stop(self):
+        self.engine.obs_point(10,5)
+        wait(lambda:self.engine.snapshot()["observer_action"]["state"]=="COMPLETED")
+        wait(lambda:self.engine.snapshot()["observation"]=="DISPLAY_ONLY")
+        self.engine.obs_point(0,0)
+        wait(lambda:self.engine.snapshot()["observer_action"]["state"]=="COMPLETED")
+        wait(self.ready)
+        self.engine.obs_stop()
+        wait(lambda:self.engine.snapshot()["observer_action"]["state"]=="COMPLETED")
+        self.assertFalse(self.engine.snapshot()["devices"]["101"]["collecting"])
+
     def test_duplicate_and_reordered_heartbeat_status_do_not_refresh(self):
         with self.engine.lock:
             p = self.engine.peers["201"]

@@ -32,11 +32,14 @@
 | `aim 201 [object-UUID]` | 단일 물체 연속 지향 시작. 선택 시 UUID 일치 필수 |
 | `stop 201` | 지향 중지. 수집은 계속. STOP_UNCONFIRMED이면 다시 요청 가능 |
 | `collect stop` / `collect start` | 지향 중지 요청 후 측정 중지 / 새 수집 세션 시작 |
+| `obs point PAN TILT` | EFF 정지·수집 중지 확인 → OBS 유한 이동·실측 정지 확인 → 수집 재개 |
+| `obs stop` / `obs status` | OBS 이동·수집 정지 요청 / 단계·현재각·관측 상태 확인 |
+| `clock-profile 101 profile.json` | firmware와 같은 검증 프로파일을 현재 boot/session에 연결 |
 | `events` | 최근 요청·결과·거부 진단 |
 | `clock-load 101 evidence.json` | 현재 boot/session에 대한 검증된 센서 시각 매핑 증빙 적용 |
 | `quit` | 지향·측정 정리 후 종료 |
 
-GUI, 다중 객체 선택·재획득, 이동 OBS, GUI IPC, 녹화/재생은 이번 범위에서 제외했습니다.
+GUI, 다중 객체 선택·재획득, 이동 중 OBS 취득·비영점 OBS 자동 지향, GUI IPC, 녹화/재생은 이번 범위에서 제외했습니다.
 현재 MVP는 물체가 하나일 때만 aim을 시작하며, 프레임 사이 0.5m 이내 단일 검출을 같은 물체로 연결합니다.
 이 단순 연결은 원본 LiDAR BoxTracker 전체를 가져온 것이 아니며, 교차·가림·동일 위치의 물체 교체를 판별하지 못합니다.
 소실·모호함·시각 불신·장치/현재각 만료·명령 미확인 후에는 자동 재개하지 않습니다.
@@ -68,7 +71,7 @@ tilt = atan2(up, hypot(forward, left))
 
 두 장치 축이 같으면 위치를 빼는 계산으로 줄어듭니다. SDK 축을 임의로 x=전방이라고 가정하지 않습니다.
 `configs/team-demo.json`의 축과 위치는 합성 데이터 예시입니다. 실제 장비 보정값이 아닙니다.
-OBS는 측정된 pan=tilt=0의 고정 관측만 지원합니다. 물체 중심은 그대로 재사용한 Detector가 반환한 검출 점들의 평균입니다.
+OBS 자동 지향은 측정된 pan=tilt=0의 고정 관측만 지원합니다. OBS 자체는 CLI로 이동할 수 있습니다. 물체 중심은 그대로 재사용한 Detector가 반환한 검출 점들의 평균입니다.
 출처: `vendor/lidar/ORIGIN.md`. 검출 헤더는 원본과 동일합니다.
 
 ## 실제 OBS/EFF 연결 시 필요한 것
@@ -79,7 +82,8 @@ OBS는 측정된 pan=tilt=0의 고정 관측만 지원합니다. 물체 중심�
 허용각과 실제 완료 판정 timeout을 CAPABILITY_REPORT로 보고해야 합니다.
 
 기본 합성 시각 프로파일은 loopback에서만 허용됩니다. 실물 프레임은 검증된 시각 매핑 없이 DISPLAY_ONLY로 처리합니다.
-clock-load 증빙 파일에는 다음 값이 필요합니다. 예시 값으로 검증을 대신하지 마세요.
+firmware의 취득 프로파일은 `clock-profile 101 profile.json`으로 읽을 수 있습니다. 유효기간과 센서 설정을 확인하고 현재 boot/session에 연결합니다.
+기존 `clock-load` 증빙 파일에는 다음 값이 필요합니다. 예시 값으로 검증을 대신하지 마세요.
 
 ```text
 id, boot_id, connection_session_id, evidence,
