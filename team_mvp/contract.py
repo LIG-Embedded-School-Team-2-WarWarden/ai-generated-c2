@@ -21,9 +21,9 @@ def stamp(value):
         raise ValueError("UTC milliseconds required")
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
-def envelope(sender, recipient, body, session=None):
+def envelope(sender, recipient, body, session=None, *, sent_at=None):
     e = pb.Envelope(version_major=1, version_minor=0, sender_id=sender,
-                    recipient_id=recipient, message_id=uid(), sent_at=utc())
+                    recipient_id=recipient, message_id=uid(), sent_at=utc() if sent_at is None else sent_at)
     if session:
         e.connection_session_id = session
     getattr(e, body_name(body)).CopyFrom(body)

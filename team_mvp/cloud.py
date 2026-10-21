@@ -4,7 +4,7 @@ import queue
 import struct
 import subprocess
 import threading
-import time
+from .clock import SystemClock
 from .contract import pb, finite, stamp, uid
 
 class Detector:
@@ -39,10 +39,11 @@ class Detector:
                 pass
 
 class Cloud:
-    def __init__(self, detector, publish):
+    def __init__(self, detector, publish, *, clock=None, autostart=True):
+        self.clock=clock if clock is not None else SystemClock()
         self.detector, self.publish = detector, publish
         self.jobs = queue.Queue(maxsize=1)
-        self.worker = threading.Thread(target=self.run, daemon=True)
+        self.worker = threading.Thread(target=self.run, daemon=True) if autostart else None
         self.key = None
         self.high_frame = 0
         self.generation = 0
@@ -51,7 +52,8 @@ class Cloud:
         self.result = None
         self.started = 0
         self.sealed = {}
-        self.worker.start()
+        if self.worker is not None:
+            self.worker.start()
 
     def reset(self):
         self.generation += 1
@@ -88,7 +90,7 @@ class Cloud:
             self.generation += 1
             self.high_frame = c.frame_id
             self.state, self.result = "UPDATING", None
-            self.started = time.monotonic()
+            self.started = self.clock.monotonic()
             meta = pb.PointCloudChunk()
             meta.CopyFrom(c)
             meta.ClearField("points")
@@ -97,7 +99,7 @@ class Cloud:
         encoded = c.SerializeToString(deterministic=True)
         if self.sealed:
             return True if self.sealed.get(c.chunk_index) == encoded else self.fail("FRAME_INVALID")
-        if not self.frame or time.monotonic()-self.started >= 1:
+        if not self.frame or self.clock.monotonic()-self.started >= 1:
             return self.fail("FRAME_INCOMPLETE")
         f = self.frame
         meta = pb.PointCloudChunk()
@@ -153,4 +155,5 @@ class Cloud:
         except queue.Empty:
             pass
         self.jobs.put_nowait(None)
-        self.worker.join(timeout=3)
+        if self.worker is not None:
+            self.worker.join(timeout=3)
