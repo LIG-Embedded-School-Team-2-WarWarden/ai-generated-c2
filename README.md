@@ -68,7 +68,11 @@ obs stop
 
 ## 구성과 검증
 
-- `team_mvp/engine.py`: 등록·설치·수집·제어 세션, Heartbeat/상태 순번, 재전송, aim/stop.
+- `team_mvp/engine.py`: CLI Facade와 서비스 조립·수신 분배·종료.
+- `team_mvp/devices.py`, `requests.py`: 장치 세션/최신성과 명령 재시도/완료 상관관계.
+- `team_mvp/observer.py`, `effector.py`: 명시적 OBS 상태 전이와 EFF 지향/STOP 세션.
+- `team_mvp/observation.py`: 취득 시각·자세·관측 승인 정책.
+- `team_mvp/clock.py`, `transport.py`, `detection.py`, `pointing.py`: 교체 가능한 시간·전송·검출·지향 계산 포트/어댑터.
 - `team_mvp/cloud.py`: 원본 전체 슬롯 조립, 최신 프레임 교체, C++ 분석 작업 분리.
 - `team_mvp/geometry.py`: 설치값 반영과 상대 벡터의 atan2 계산.
 - `src/detector_worker.cpp`, `vendor/lidar/`: 기존 Detector 재사용. 내부 stdin 전달은 장치 통신 규격이 아닙니다.
@@ -85,3 +89,10 @@ obs stop
 이전 v3 서버·대시보드 코드는 [legacy 안내](docs/legacy-runtime.md)로 분리했습니다.
 필요한 경우 `-DC2_BUILD_LIVE=ON`으로 빌드할 수 있지만 ICD 1.0 콘솔/더미와 호환되지 않습니다.
 CI는 새 콘솔 시험과 Windows legacy 회귀 시험을 모두 수행하도록 구성했습니다.
+
+## 설계와 개발 근거
+
+[객체지향 구조·패턴과 실제 실행 경로](docs/software-design.md),
+[요구사항·TDD 커밋·테스트 추적](docs/development-process.md)을 제공합니다.
+새 도메인 시험은 `python tests/test_design.py`로 네트워크·스레드·실제 sleep 없이 실행합니다.
+기존 프로젝트 전체가 TDD로 작성됐다고 소급해 설명하지 않습니다.

@@ -1,0 +1,2 @@
+-r requirements-team.txt
+black==25.1.0

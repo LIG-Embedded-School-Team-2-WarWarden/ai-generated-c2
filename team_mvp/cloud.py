@@ -1,46 +1,18 @@
 """ICD POINT_CLOUD_CHUNK assembly and C2-owned LiDAR detection."""
-import json
+
 import queue
-import struct
-import subprocess
 import threading
 from .clock import SystemClock
-from .contract import pb, finite, stamp, uid
+from .contract import pb, finite
+from .detection import PointDetector, SubprocessDetector
 
-class Detector:
-    def __init__(self, executable):
-        self.process = subprocess.Popen([str(executable)], stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+# Existing CLI imports remain compatible; the implementation lives in the adapter.
+Detector = SubprocessDetector
 
-    def detect(self, width, height, points):
-        data = bytearray(struct.pack("<II", width, height))
-        for p in points:
-            data.extend(struct.pack("<IfffI", p.sdk_depth_raw, p.x if p.xyz_valid else 0,
-                p.y if p.xyz_valid else 0, p.z if p.xyz_valid else 0, p.xyz_valid))
-        self.process.stdin.write(data)
-        self.process.stdin.flush()
-        line = self.process.stdout.readline()
-        result = json.loads(line)
-        if result is None:
-            raise ValueError("detector failed")
-        for value in result:
-            value["id"] = uid()
-        return result
-
-    def close(self):
-        if self.process.poll() is None:
-            self.process.kill()
-        self.process.wait(timeout=3)
-        for stream in (self.process.stdin,self.process.stdout):
-            try:
-                stream.close()
-            except OSError:
-                pass
 
 class Cloud:
-    def __init__(self, detector, publish, *, clock=None, autostart=True):
-        self.clock=clock if clock is not None else SystemClock()
+    def __init__(self, detector: PointDetector, publish, *, clock=None, autostart=True):
+        self.clock = clock if clock is not None else SystemClock()
         self.detector, self.publish = detector, publish
         self.jobs = queue.Queue(maxsize=1)
         self.worker = threading.Thread(target=self.run, daemon=True) if autostart else None
@@ -75,15 +47,26 @@ class Cloud:
         if not c.frame_id or c.frame_id < self.high_frame:
             return False
         n = c.width * c.height
-        if not 0 < n <= 500000 or n != c.total_points or not 1 <= c.chunk_count <= 8192 or c.chunk_index >= c.chunk_count:
+        if (
+            not 0 < n <= 500000
+            or n != c.total_points
+            or not 1 <= c.chunk_count <= 8192
+            or c.chunk_index >= c.chunk_count
+        ):
             return self.fail("FRAME_INVALID")
         if not c.points or c.motion_compensation != pb.PointCloudChunk.MOTION_COMPENSATION_NONE:
             return self.fail("FRAME_INVALID")
         for p in c.points:
             xyz = [p.HasField(a) for a in ("x", "y", "z")]
-            if p.pixel_index >= n or (p.xyz_valid and (not all(xyz) or not finite(p.x,p.y,p.z))) or (not p.xyz_valid and any(xyz)):
+            if (
+                p.pixel_index >= n
+                or (p.xyz_valid and (not all(xyz) or not finite(p.x, p.y, p.z)))
+                or (not p.xyz_valid and any(xyz))
+            ):
                 return self.fail("FRAME_INVALID")
-            if p.HasField("intensity") and (not finite(p.intensity) or not c.HasField("intensity_scale_id")):
+            if p.HasField("intensity") and (
+                not finite(p.intensity) or not c.HasField("intensity_scale_id")
+            ):
                 return self.fail("FRAME_INVALID")
         if c.frame_id > self.high_frame:
             self.sealed = {}
@@ -95,11 +78,11 @@ class Cloud:
             meta.CopyFrom(c)
             meta.ClearField("points")
             meta.chunk_index = 0
-            self.frame = dict(meta=meta, slots=[None]*n, chunks={}, bytes=0, verified=verified)
+            self.frame = dict(meta=meta, slots=[None] * n, chunks={}, bytes=0, verified=verified)
         encoded = c.SerializeToString(deterministic=True)
         if self.sealed:
             return True if self.sealed.get(c.chunk_index) == encoded else self.fail("FRAME_INVALID")
-        if not self.frame or self.clock.monotonic()-self.started >= 1:
+        if not self.frame or self.clock.monotonic() - self.started >= 1:
             return self.fail("FRAME_INCOMPLETE")
         f = self.frame
         meta = pb.PointCloudChunk()
@@ -115,7 +98,7 @@ class Cloud:
         if len(set(indices)) != len(indices) or any(f["slots"][i] is not None for i in indices):
             return self.fail("FRAME_INVALID")
         f["bytes"] += len(encoded)
-        if f["bytes"] > 8*1024*1024:
+        if f["bytes"] > 8 * 1024 * 1024:
             return self.fail("FRAME_INVALID")
         f["chunks"][c.chunk_index] = encoded
         for p in c.points:
