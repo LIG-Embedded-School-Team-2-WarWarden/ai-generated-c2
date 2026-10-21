@@ -11,7 +11,7 @@ try {
         if (-not (Test-Path -LiteralPath $c2Source)) { throw "Build first: missing $c2Source" }
         Copy-Item -LiteralPath $c2Source -Destination $c2PackageDir
     }
-    foreach ($c2Subdir in @('tests/dummies','configs','scripts','external/warwarden-protocol/python/mfs/icd/v1','external/warwarden-protocol/proto/mfs/icd/v1')) {
+    foreach ($c2Subdir in @('tests/dummies','configs','scripts','licenses','external/warwarden-protocol/python/mfs/icd/v1','external/warwarden-protocol/proto/mfs/icd/v1')) {
         New-Item -ItemType Directory -Force (Join-Path $c2PackageDir $c2Subdir) | Out-Null
     }
     foreach ($c2File in Get-ChildItem tests/dummies -File -Filter '*.py') {
@@ -23,6 +23,8 @@ try {
     Copy-Item docs/console-mvp.md (Join-Path $c2PackageDir 'console-mvp.md')
     Copy-Item vendor/lidar/ORIGIN.md (Join-Path $c2PackageDir 'ORIGIN-lidar.md')
     Copy-Item external/warwarden-protocol/LICENSE (Join-Path $c2PackageDir 'LICENSE-protocol.txt')
+    Copy-Item -LiteralPath vendor/licenses/protobuf-LICENSE.txt -Destination (Join-Path $c2PackageDir 'licenses')
+    Copy-Item -LiteralPath vendor/licenses/json-LICENSE.txt -Destination (Join-Path $c2PackageDir 'licenses')
     $c2Revision = git rev-parse HEAD
     $c2ProtocolRevision = git -C external/warwarden-protocol rev-parse HEAD
     @"

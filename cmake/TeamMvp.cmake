@@ -1,11 +1,14 @@
 include(FetchContent)
-find_package(Protobuf 3.12 QUIET)
+find_package(Protobuf 3.15 QUIET)
 if(NOT Protobuf_FOUND)
     set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(protobuf_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
     set(protobuf_WITH_ZLIB OFF CACHE BOOL "" FORCE)
     set(protobuf_MSVC_STATIC_RUNTIME OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(protobuf URL https://github.com/protocolbuffers/protobuf/archive/refs/tags/v21.12.tar.gz DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_Declare(protobuf
+        URL https://github.com/protocolbuffers/protobuf/archive/refs/tags/v21.12.tar.gz
+        URL_HASH SHA256=22fdaf641b31655d4b2297f9981fa5203b2866f8332d3c6333f6b0107bb320de
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     FetchContent_MakeAvailable(protobuf)
 endif()
 find_package(nlohmann_json 3.11 QUIET)

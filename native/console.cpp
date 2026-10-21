@@ -2,12 +2,68 @@
 #include <csignal>
 #include <fstream>
 #include <iostream>
+#ifndef _WIN32
+#include <cerrno>
+#include <poll.h>
+#include <unistd.h>
+#endif
 using namespace c2mvp;
 namespace {
 volatile std::sig_atomic_t interrupted = 0;
 void signal_handler(int) {
     interrupted = 1;
 }
+// Poll stdin on POSIX so SIGINT also exits while no line is being typed.
+// Read bytes ourselves to avoid mixing fd readiness with iostream read-ahead.
+class ConsoleInput {
+#ifndef _WIN32
+    std::string buffered;
+    bool eof = false;
+#endif
+  public:
+    std::optional<std::string> next() {
+#ifdef _WIN32
+        std::string line;
+        if (!interrupted && std::getline(std::cin, line))
+            return line;
+        return {};
+#else
+        while (!interrupted) {
+            auto end = buffered.find('\n');
+            if (end != std::string::npos || eof) {
+                if (buffered.empty())
+                    return {};
+                auto line = buffered.substr(0, end);
+                if (end == std::string::npos)
+                    buffered.clear();
+                else
+                    buffered.erase(0, end + 1);
+                if (!line.empty() && line.back() == '\r')
+                    line.pop_back();
+                return line;
+            }
+            pollfd fd{STDIN_FILENO, POLLIN, 0};
+            int rc = ::poll(&fd, 1, 50);
+            if (rc < 0) {
+                if (errno == EINTR)
+                    continue;
+                throw std::runtime_error("stdin poll failed");
+            }
+            if (!rc)
+                continue;
+            char bytes[1024];
+            auto n = ::read(STDIN_FILENO, bytes, sizeof bytes);
+            if (n > 0)
+                buffered.append(bytes, static_cast<size_t>(n));
+            else if (n == 0)
+                eof = true;
+            else if (errno != EINTR)
+                throw std::runtime_error("stdin read failed");
+        }
+        return {};
+#endif
+    }
+};
 } // namespace
 int main(int argc, char **argv) {
     try {
@@ -72,13 +128,13 @@ int main(int argc, char **argv) {
                          .dump()
                   << std::endl;
         try {
-            std::string line;
-            while (!interrupted && std::getline(std::cin, line)) {
-                if (line == "quit" || line == "exit")
+            ConsoleInput input;
+            while (auto line = input.next()) {
+                if (*line == "quit" || *line == "exit")
                     break;
                 try {
                     std::lock_guard lock(mutex);
-                    auto result = engine.command(line);
+                    auto result = engine.command(*line);
                     if (!result.is_null())
                         std::cout << result.dump() << std::endl;
                 } catch (const std::exception &e) {

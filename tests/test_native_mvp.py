@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -96,8 +97,9 @@ class NativeIntegration(unittest.TestCase):
 
     def tearDown(self):
         try:
-            events = self.c2.command("events")
-            self.assertFalse([e for e in events if e["event"] == "runtime_error"], events)
+            if self.c2.process.poll() is None:
+                events = self.c2.command("events")
+                self.assertFalse([e for e in events if e["event"] == "runtime_error"], events)
             self.c2.close()
         finally:
             self.obs.close()
@@ -152,6 +154,17 @@ class NativeIntegration(unittest.TestCase):
         self.assertFalse(stop.HasField("pan_deg"))
         self.assertFalse(stop.HasField("source_frame_id"))
         self.assertGreater(stop.command_sequence, points[-1].command_sequence)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX signal delivery test")
+    def test_sigint_while_waiting_for_input_stops_and_exits(self):
+        self.start()
+        self.c2.process.send_signal(signal.SIGINT)
+        self.assertEqual(self.c2.process.wait(timeout=5), 0)
+        self.c2.reader.join(timeout=1)
+        self.assertGreaterEqual(self.eff.stop_applications, 1)
+        self.assertIsNone(self.obs.collection)
+        final = json.loads(self.c2.output[-1])
+        self.assertEqual(final["controls"]["201"]["state"], "STOPPED")
 
     def test_retry_keeps_exact_packet_and_applies_once(self):
         self.eff.drop_first_point_result = True

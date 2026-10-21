@@ -14,7 +14,7 @@ Windows에서는 Visual Studio C++ 빌드 도구를 사용합니다.
 ./build/native/Release/c2_mvp_console.exe
 ```
 
-C++ 실행 파일은 Python을 설치하지 않아도 실행됩니다. CTest의 더미 시험까지 실행하려면 먼저 `./scripts/setup-team.ps1`로 시험 의존성을 설치합니다.
+C++ 실행 파일은 Python을 설치하지 않아도 실행됩니다. Python 검색·더미 시험 자체를 제외하려면 CMake에 `-DC2_BUILD_DUMMY_TESTS=OFF`를 지정합니다. CTest의 더미 시험까지 실행하려면 먼저 `./scripts/setup-team.ps1`로 시험 의존성을 설치합니다.
 다른 터미널 두 개에서 선택적으로 더미를 실행합니다.
 
 ```powershell
