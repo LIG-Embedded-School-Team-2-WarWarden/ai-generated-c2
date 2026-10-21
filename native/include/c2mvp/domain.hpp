@@ -71,6 +71,7 @@ struct Peer {
     unsigned mode_revision=1;
     std::string obs_session,collection,measurement_result="PENDING";
     std::map<std::string,pb::ObsPose> poses;
+    std::deque<std::string> pose_order;
     Json mapping=nullptr;
 };
 class RequestTracker {

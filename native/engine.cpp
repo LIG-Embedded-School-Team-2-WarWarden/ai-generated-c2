@@ -26,7 +26,9 @@ void Engine::receive(const Datagram& d){
     case pb::Envelope::kObsPose:
         if(p.id==config.observer){auto& pose=e.obs_pose();auto old=p.poses.find(pose.pose_id());
             if(old!=p.poses.end()&&old->second.SerializeAsString()!=pose.SerializeAsString()){observation.invalidate("POSE_CONFLICT");effector.stop_all("POSE_CONFLICT");return;}
-            p.poses[pose.pose_id()]=pose;if(p.poses.size()>64)p.poses.erase(p.poses.begin());}break;
+            if(old==p.poses.end())p.pose_order.push_back(pose.pose_id());
+            p.poses[pose.pose_id()]=pose;
+            if(p.pose_order.size()>64){p.poses.erase(p.pose_order.front());p.pose_order.pop_front();}}break;
     case pb::Envelope::kPointCloudChunk:
         if(p.id==config.observer&&p.installed&&p.collecting&&e.point_cloud_chunk().collection_session_id()==p.collection){
             bool verified=observation.verify(p,e.point_cloud_chunk());observation.cloud.ingest(p.session,e.point_cloud_chunk(),verified);}break;
@@ -53,7 +55,8 @@ Json Engine::snapshot()const{
     result["controls"]=effector.snapshot();result["observer_action"]=observer.snapshot();result["pending"]=requests.size();return result;
 }
 Json Engine::command(const std::string& line){
-    std::istringstream in(line);std::vector<std::string> args;std::string arg;while(in>>std::quoted(arg))args.push_back(arg);
+    // Windows path separators are literal; quoting only groups a path containing spaces.
+    std::istringstream in(line);std::vector<std::string> args;std::string arg;while(in>>std::quoted(arg,'"','\0'))args.push_back(arg);
     if(args.empty())return nullptr;auto& cmd=args[0];
     auto number=[](const std::string& s){size_t end=0;double n=std::stod(s,&end);require(end==s.size()&&finite(n),"finite number required");return n;};
     if(cmd=="status"&&args.size()==1)return snapshot();
