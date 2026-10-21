@@ -1,4 +1,5 @@
 """Black-box tests: native C++ C2 process against Python equipment doubles only."""
+
 import argparse
 import json
 import math
@@ -8,6 +9,7 @@ import queue
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import unittest
 
@@ -35,15 +37,28 @@ class Console:
         # An empty PATH demonstrates that C2 doesn't locate/spawn a Python runtime.
         env = dict(os.environ, PATH="")
         self.process = subprocess.Popen(
-            [str(Path(args.console).resolve()), "--config", str(ROOT / "configs/team-demo.json"),
-             "--asset-port", "0"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, encoding="utf-8", env=env)
+            [
+                str(Path(args.console).resolve()),
+                "--config",
+                str(ROOT / "configs/team-demo.json"),
+                "--asset-port",
+                "0",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            env=env,
+        )
         self.lines = queue.Queue()
         self.output = []
+
         def read():
             for line in self.process.stdout:
                 self.output.append(line)
                 self.lines.put(line)
+
         self.reader = threading.Thread(target=read, daemon=True)
         self.reader.start()
         started = self.read()
@@ -107,6 +122,7 @@ class NativeIntegration(unittest.TestCase):
                 return True
             self.assertIn("observation", response["rejected"])
             return False
+
         wait(begin)
         wait(lambda: self.eff.point_applications >= 1)
 
@@ -123,14 +139,14 @@ class NativeIntegration(unittest.TestCase):
         self.assertGreater(len({c.source_frame_id for c in points}), 2)
         self.assertEqual(len({c.object_id for c in points}), 1)
         for command in points:
-            left = .1 + .02 * math.sin(command.source_frame_id * .1)
-            expected = math.degrees(math.atan2(.1, math.hypot(3, left)))
+            left = 0.1 + 0.02 * math.sin(command.source_frame_id * 0.1)
+            expected = math.degrees(math.atan2(0.1, math.hypot(3, left)))
             self.assertAlmostEqual(command.tilt_deg, expected, places=3)
             self.assertEqual(command.source_connection_session_id, self.obs.session)
             self.assertTrue(command.HasField("expires_at"))
         self.stop()
         count = self.eff.point_applications
-        time.sleep(.3)
+        time.sleep(0.3)
         self.assertEqual(self.eff.point_applications, count)
         stop = self.eff.commands[-1]
         self.assertFalse(stop.HasField("pan_deg"))
@@ -140,6 +156,7 @@ class NativeIntegration(unittest.TestCase):
     def test_retry_keeps_exact_packet_and_applies_once(self):
         self.eff.drop_first_point_result = True
         self.start()
+
         def duplicated():
             seen = set()
             for key, _ in list(self.eff.received_packets):
@@ -147,6 +164,7 @@ class NativeIntegration(unittest.TestCase):
                     return True
                 seen.add(key)
             return False
+
         wait(duplicated)
         packets = {}
         for key, packet in list(self.eff.received_packets):
@@ -190,7 +208,7 @@ class NativeIntegration(unittest.TestCase):
         wait(lambda: self.state()["observer_action"]["state"] == "COMPLETED")
         self.assertEqual(self.control()["state"], "STOPPED")
         count = self.eff.point_applications
-        time.sleep(.3)
+        time.sleep(0.3)
         self.assertEqual(self.eff.point_applications, count)
 
     def test_empty_detection_stops_without_resuming(self):
@@ -201,7 +219,7 @@ class NativeIntegration(unittest.TestCase):
         count = self.eff.point_applications
         self.obs.empty = False
         wait(self.ready)
-        time.sleep(.3)
+        time.sleep(0.3)
         self.assertEqual(self.eff.point_applications, count)
 
     def test_missing_clock_mapping_blocks_aim(self):
@@ -244,7 +262,11 @@ class NativeIntegration(unittest.TestCase):
         wait(lambda: self.control().get("state") == "STOPPED")
         self.assertEqual(self.state()["observation"], "FRAME_INVALID")
         self.obs.sock.sendto(encode(envelope("101", "C2", c, uid())), self.c2.address)
-        wait(lambda: any(e.get("reason") == "unknown session/source" for e in self.c2.command("events")))
+        wait(
+            lambda: any(
+                e.get("reason") == "unknown session/source" for e in self.c2.command("events")
+            )
+        )
 
     def test_stop_result_required_for_confirmation(self):
         self.start()
@@ -271,8 +293,26 @@ class NativeIntegration(unittest.TestCase):
         wait(lambda: self.control().get("state") == "STOPPED")
         wait(self.ready)
         count = self.eff.point_applications
-        time.sleep(.3)
+        time.sleep(0.3)
         self.assertEqual(self.eff.point_applications, count)
+
+    def test_clock_profile_and_foreign_session_evidence(self):
+        state = self.state()["devices"]["101"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "clock.json"
+            evidence = dict(boot_id=uid(), connection_session_id=state["session"],
+                            evidence="measured test fixture", offset_seconds=0, uncertainty_ms=1)
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+            self.assertIn("rejected", self.c2.command(f'clock-load 101 "{path}"'))
+            profile = dict(id="synthetic-clock-v1", sensor_profile="synthetic-organized-v1",
+                           evidence="measured test fixture", offset_seconds=0, uncertainty_ms=1,
+                           valid_from="1970-01-01T00:00:00.000Z", valid_until="2099-01-01T00:00:00.000Z",
+                           sync_type=2, sync_state=1, frame_protocol_version=3)
+            path.write_text(json.dumps(profile), encoding="utf-8")
+            self.assertIn("accepted", self.c2.command(f'clock-profile 101 "{path}"'))
+            profile["valid_until"] = "1970-01-01T00:00:00.000Z"
+            path.write_text(json.dumps(profile), encoding="utf-8")
+            self.assertIn("rejected", self.c2.command(f'clock-profile 101 "{path}"'))
 
     def test_collect_stop_start_keeps_effector_stopped(self):
         self.start()
