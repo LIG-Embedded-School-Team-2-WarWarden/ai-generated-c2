@@ -300,14 +300,27 @@ class NativeIntegration(unittest.TestCase):
         state = self.state()["devices"]["101"]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "clock.json"
-            evidence = dict(boot_id=uid(), connection_session_id=state["session"],
-                            evidence="measured test fixture", offset_seconds=0, uncertainty_ms=1)
+            evidence = dict(
+                boot_id=uid(),
+                connection_session_id=state["session"],
+                evidence="measured test fixture",
+                offset_seconds=0,
+                uncertainty_ms=1,
+            )
             path.write_text(json.dumps(evidence), encoding="utf-8")
             self.assertIn("rejected", self.c2.command(f'clock-load 101 "{path}"'))
-            profile = dict(id="synthetic-clock-v1", sensor_profile="synthetic-organized-v1",
-                           evidence="measured test fixture", offset_seconds=0, uncertainty_ms=1,
-                           valid_from="1970-01-01T00:00:00.000Z", valid_until="2099-01-01T00:00:00.000Z",
-                           sync_type=2, sync_state=1, frame_protocol_version=3)
+            profile = dict(
+                id="synthetic-clock-v1",
+                sensor_profile="synthetic-organized-v1",
+                evidence="measured test fixture",
+                offset_seconds=0,
+                uncertainty_ms=1,
+                valid_from="1970-01-01T00:00:00.000Z",
+                valid_until="2099-01-01T00:00:00.000Z",
+                sync_type=2,
+                sync_state=1,
+                frame_protocol_version=3,
+            )
             path.write_text(json.dumps(profile), encoding="utf-8")
             self.assertIn("accepted", self.c2.command(f'clock-profile 101 "{path}"'))
             profile["valid_until"] = "1970-01-01T00:00:00.000Z"

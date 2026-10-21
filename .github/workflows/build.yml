@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m pip install -r requirements-dev.txt
-      - run: python -m black --check --workers 1 team_mvp tests/test_design.py
+      - run: python -m black --check --workers 1 tests/test_native_mvp.py
       - run: cmake -S . -B build
       - if: runner.os == 'Windows'
         run: cmake -S . -B build -DC2_BUILD_LIVE=ON
