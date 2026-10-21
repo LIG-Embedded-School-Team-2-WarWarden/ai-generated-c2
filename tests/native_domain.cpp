@@ -45,6 +45,12 @@ int main() {
         check(transport.packets.size()==3,"retry budget is three sends");
         check(transport.packets[0]==transport.packets[1] && transport.packets[1]==transport.packets[2],"retry exact bytes");
         check(timeouts==1 && requests.size()==0,"timeout clears pending before callback");
+        // A failed terminal result without the ICD's reason is malformed, not a confirmation.
+        q->set_command_sequence(7);
+        requests.request(peer,cmd,pb::Envelope::kPointingResult,[&](const pb::Envelope*){++completed;});
+        r->mutable_outcome()->set_result(pb::REQUEST_RESULT_FAILED);
+        requests.result(peer,reply);
+        check(requests.size()==1,"failed result without reason must stay pending");
         ObserverOperation op; op.phase=ObserverPhase::Moving;
         bool rejected=false;try{op.transition(ObserverPhase::Completed);}catch(const std::invalid_argument&){rejected=true;}
         check(rejected,"collection cannot skip confirmation");
