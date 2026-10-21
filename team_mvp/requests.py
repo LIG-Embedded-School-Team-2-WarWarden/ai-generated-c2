@@ -19,6 +19,10 @@ class RequestTracker:
         return packet
 
     def request(self,peer,body,result_kind,callback,timeout=2):
+        # Freeze semantic identity along with the exact wire packet.
+        snapshot=body.__class__()
+        snapshot.CopyFrom(body)
+        body=snapshot
         packet=self.send(peer,body)
         now=self.clock.monotonic()
         self.pending[body.request_id]=dict(peer=peer["id"],session=peer["session"],body=body,
