@@ -122,6 +122,7 @@ void RequestTracker::result(const Peer& p,const pb::Envelope& e){
     if(out->result()==pb::REQUEST_RESULT_ACCEPTED){v.accepted=true;return;}
     if(out->result()<pb::REQUEST_RESULT_COMPLETED||out->result()>pb::REQUEST_RESULT_CANCELLED)return;
     if(!out->has_completed_at())return;stamp(out->completed_at());
+    if(out->result()!=pb::REQUEST_RESULT_COMPLETED&&!out->has_reason_code())return;
     auto cb=std::move(v.callback);pending.erase(it);cb(&e);
 }
 void RequestTracker::tick(const std::map<std::string,Peer>& peers){
