@@ -3,7 +3,7 @@ import pathlib
 import sys
 import time
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
-from team_mvp.peers import Peer
+from tests.dummies.peers import Peer
 
 parser = argparse.ArgumentParser(description="Synthetic loopback OBS/EFF using team ICD 1.0")
 parser.add_argument("role",choices=["OBS","EFF"])

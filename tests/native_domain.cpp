@@ -28,6 +28,7 @@ int main() {
         r->mutable_outcome()->set_request_id(q->request_id());
         r->mutable_outcome()->set_result(pb::REQUEST_RESULT_COMPLETED);
         r->mutable_outcome()->set_reported_at(clock.utc());
+        r->mutable_outcome()->set_completed_at(clock.utc());
         r->set_control_session_id(q->control_session_id()); r->set_control_epoch(2);
         r->set_command_sequence(7);
         int completed=0;

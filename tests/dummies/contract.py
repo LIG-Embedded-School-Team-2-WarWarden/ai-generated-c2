@@ -7,7 +7,7 @@ import uuid
 import math
 import re
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "external/warwarden-protocol/python"))
 from mfs.icd.v1 import mfs_pb2 as pb
 
