@@ -97,6 +97,12 @@ class RequestTests(unittest.TestCase):
         self.request()
         e=decode(self.transport.packets[0][0],'201')
         self.assertEqual(e.sent_at,self.clock.utc())
+    def test_caller_mutation_cannot_change_inflight_correlation(self):
+        self.request()
+        self.command.command_sequence=999
+        self.tracker.handle_result(self.peer,'pointing_result',self.reply(sequence=7))
+        self.assertEqual(len(self.results),1)
+
     def test_timeout_callback_can_schedule_a_stop(self):
         def timed_out(result):
             self.results.append(result)
