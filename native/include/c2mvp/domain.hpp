@@ -93,6 +93,7 @@ struct Peer {
     std::map<std::string, pb::ObsPose> poses;
     std::deque<std::string> pose_order;
     Json mapping = nullptr;
+    bool laser_supported = false;
 };
 class RequestTracker {
   public:
@@ -180,6 +181,10 @@ struct EffectorSession {
     double last_send = 0, last_observation = 0;
     bool stop_ack = false;
     std::optional<std::pair<double, double>> manual;
+    uint64_t laser_sequence = 0;
+    std::optional<pb::LaserStatus> laser_status;
+    double laser_received = 0;
+    std::string laser_result = "NONE";
 };
 struct Observation {
     pb::PointCloudChunk meta;
@@ -282,6 +287,9 @@ class EffectorController {
                std::optional<std::pair<double, double>> manual = {});
     void stop(const std::string &, const std::string &reason = "OPERATOR_STOP");
     void stop_all(const std::string &);
+    void laser(const std::string &, pb::LaserCommand::Operation, unsigned duration = 0);
+    void laser_status(Peer &, const pb::LaserStatus &);
+    Json lasers() const;
     void observed(const std::vector<Object> &, double);
     bool stopped() const;
     void tick(double);

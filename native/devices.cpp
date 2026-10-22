@@ -1,4 +1,5 @@
 #include "c2mvp/domain.hpp"
+#include <algorithm>
 #include <regex>
 namespace c2mvp {
 static bool uuid_valid(const std::string &s) {
@@ -64,6 +65,9 @@ void DeviceSessions::registration(const pb::Envelope &e, const Endpoint &source)
         peers[p.id] = std::move(p);
     }
     make_reply(false, peers.at(r.device_id()).session);
+    auto &peer = peers.at(r.device_id());
+    peer.laser_supported = std::find(r.capabilities().begin(), r.capabilities().end(),
+                                     pb::CAPABILITY_LASER_CONTROL) != r.capabilities().end();
     registrations[key] = {raw, host.clock.monotonic()};
 }
 void DeviceSessions::heartbeat(Peer &p, const pb::Heartbeat &h) {

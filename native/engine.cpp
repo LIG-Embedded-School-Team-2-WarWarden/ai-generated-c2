@@ -47,6 +47,9 @@ void Engine::receive(const Datagram &d) {
     case pb::Envelope::kCapabilityReport:
         devices.capability(p, e.capability_report());
         break;
+    case pb::Envelope::kLaserStatus:
+        effector.laser_status(p, e.laser_status());
+        break;
     case pb::Envelope::kObsPose:
         if (p.id == config.observer) {
             auto &pose = e.obs_pose();
@@ -151,6 +154,7 @@ Json Engine::snapshot() const {
                     {{"id", o.id}, {"x", o.x}, {"y", o.y}, {"z", o.z}, {"count", o.count}});
     }
     result["controls"] = effector.snapshot();
+    result["lasers"] = effector.lasers();
     result["observer_action"] = observer.snapshot();
     result["pending"] = requests.size();
     return result;
@@ -186,6 +190,19 @@ Json Engine::command(const std::string &line) {
         effector.begin(args[1], "", std::pair{number(args[2]), number(args[3])});
     else if (cmd == "stop" && args.size() == 2)
         effector.stop(args[1]);
+    else if (cmd == "laser" && args.size() >= 3) {
+        if (args[1] == "status" && args.size() == 3)
+            effector.laser(args[2], pb::LaserCommand::OPERATION_GET_STATUS);
+        else if (args[1] == "off" && args.size() == 3)
+            effector.laser(args[2], pb::LaserCommand::OPERATION_OFF);
+        else if (args[1] == "on" && args.size() == 4) {
+            double duration = number(args[3]);
+            require(duration >= 1 && duration <= 5000 && duration == std::floor(duration),
+                    "laser duration must be integer 1..5000 ms");
+            effector.laser(args[2], pb::LaserCommand::OPERATION_ON, static_cast<unsigned>(duration));
+        } else
+            throw std::invalid_argument("laser on EFF_ID DURATION_MS | off EFF_ID | status EFF_ID");
+    }
     else if (cmd == "collect" && args.size() == 2 && (args[1] == "start" || args[1] == "stop"))
         observer.collect(args[1] == "start");
     else if (cmd == "obs" && args.size() == 4 && args[1] == "point")

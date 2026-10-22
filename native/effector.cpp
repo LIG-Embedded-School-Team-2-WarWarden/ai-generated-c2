@@ -121,6 +121,9 @@ void EffectorController::stop(const std::string &id, const std::string &reason) 
         (c->state == EffectorPhase::Stopping && c->reason != "STOP_UNCONFIRMED"))
         return;
     auto &p = host.devices.peers.at(id);
+    host.requests.cancel(id, {pb::Envelope::kLaserResult});
+    if (p.laser_supported && p.cap && p.cap->laser_control_supported())
+        laser(id, pb::LaserCommand::OPERATION_OFF);
     c->state = EffectorPhase::Stopping;
     c->reason = reason;
     c->stop_ack = false;
@@ -148,6 +151,99 @@ void EffectorController::stop(const std::string &id, const std::string &reason) 
 void EffectorController::stop_all(const std::string &reason) {
     for (auto &[id, c] : sessions)
         stop(id, reason);
+}
+void EffectorController::laser(const std::string &id, pb::LaserCommand::Operation operation,
+                                unsigned duration) {
+    auto &p = host.devices.peers.at(id);
+    require(host.config.devices.at(id).role == "EFF" && p.laser_supported && p.cap &&
+                p.cap->laser_control_supported(), "EFF laser control unsupported");
+    require(sessions.contains(id), "open EFF control with point/aim first");
+    auto c = sessions.at(id);
+    const bool on = operation == pb::LaserCommand::OPERATION_ON;
+    if (on) {
+        require((c->state == EffectorPhase::Manual || c->state == EffectorPhase::Running) &&
+                    host.devices.valid(p, true), "EFF must be ready and measured stopped");
+        require(duration > 0 && duration <= 5000, "laser duration must be 1..5000 ms");
+        require(!host.requests.has(id, pb::Envelope::kLaserResult), "laser command pending");
+    } else if (operation == pb::LaserCommand::OPERATION_OFF)
+        host.requests.cancel(id, {pb::Envelope::kLaserResult});
+    else
+        require(!host.requests.has(id, pb::Envelope::kLaserResult), "laser command pending");
+    pb::Envelope cmd;
+    auto *q = cmd.mutable_laser_command();
+    q->set_request_id(uid());
+    q->set_control_session_id(c->session);
+    q->set_control_epoch(c->epoch);
+    q->set_command_sequence(++c->laser_sequence);
+    q->set_operation(operation);
+    q->set_issued_at(host.clock.utc());
+    q->set_effector_installation_revision(host.config.devices.at(id).revision);
+    if (on) {
+        q->set_expires_at(host.clock.utc(1));
+        q->set_duration_ms(duration);
+    }
+    c->laser_result = "PENDING";
+    host.requests.request(p, cmd, pb::Envelope::kLaserResult,
+        [this, id, c, operation](const pb::Envelope *e) {
+            if (!sessions.contains(id) || sessions.at(id) != c)
+                return;
+            c->laser_result = e ? pb::RequestResult_Name(e->laser_result().outcome().result())
+                                : "UNCONFIRMED";
+            // State is displayed only from independently timestamped LaserStatus telemetry.
+            if (!e || (completed(e) && operation != pb::LaserCommand::OPERATION_GET_STATUS &&
+                (!e->laser_result().has_state_observed_at() ||
+                 e->laser_result().actual_laser_state() !=
+                     (operation == pb::LaserCommand::OPERATION_ON ? pb::LASER_STATE_ON : pb::LASER_STATE_OFF)))) {
+                c->laser_status.reset();
+                c->laser_result = "UNCONFIRMED";
+                if (operation == pb::LaserCommand::OPERATION_ON)
+                    stop(id, "LASER_UNCONFIRMED");
+            }
+        });
+}
+void EffectorController::laser_status(Peer &p, const pb::LaserStatus &s) {
+    auto it = sessions.find(p.id);
+    if (it == sessions.end() || s.device_id() != p.id)
+        return;
+    auto c = it->second;
+    if (!s.has_control_session_id() || s.control_session_id() != c->session ||
+        s.control_epoch() != c->epoch || s.last_accepted_sequence() > c->laser_sequence)
+        return;
+    double age = host.clock.time() - stamp(s.reported_at());
+    if (age < -.1 || age > 1)
+        return;
+    if (s.has_state_observed_at()) {
+        double measured_age = host.clock.time() - stamp(s.state_observed_at());
+        if (measured_age < -.1 || measured_age > 1)
+            return;
+    }
+    if (c->laser_status && (s.last_accepted_sequence() < c->laser_status->last_accepted_sequence() ||
+        stamp(s.reported_at()) <= stamp(c->laser_status->reported_at())))
+        return;
+    c->laser_status = s;
+    c->laser_received = host.clock.monotonic();
+}
+Json EffectorController::lasers() const {
+    Json out = Json::object();
+    for (const auto &[id, c] : sessions) {
+        const auto &p = host.devices.peers.at(id);
+        bool current = c->laser_status && c->laser_status->has_state_observed_at() &&
+                       !c->laser_status->has_fault_code() &&
+                       (c->laser_status->laser_state() == pb::LASER_STATE_ON ||
+                        c->laser_status->laser_state() == pb::LASER_STATE_OFF) &&
+                       host.clock.time() - stamp(c->laser_status->state_observed_at()) <= 1 &&
+                       host.clock.monotonic() - c->laser_received <= 1 &&
+                       host.clock.monotonic() - p.alive <= 2;
+        out[id] = {{"supported", p.laser_supported && p.cap && p.cap->laser_control_supported()},
+                   {"state", current ? pb::LaserState_Name(c->laser_status->laser_state()) : "LASER_STATE_UNKNOWN"},
+                   {"result", c->laser_result}};
+        if (current && c->laser_status->laser_state() == pb::LASER_STATE_ON &&
+            c->laser_status->has_remaining_duration_ms())
+            out[id]["remaining_duration_ms"] = std::max(0.0,
+                c->laser_status->remaining_duration_ms() -
+                (host.clock.monotonic() - c->laser_received) * 1000);
+    }
+    return out;
 }
 void EffectorController::tick(double now) {
     for (auto &[id, c] : sessions)

@@ -25,6 +25,9 @@ C2 실행에는 Python이 필요 없습니다. 더미 시험에는 `./scripts/se
 
 ## 명령
 
+레이저 명령 `laser on 201 DURATION_MS`, `laser off 201`, `laser status 201`와 지원 조건은
+[레이저 운용 안내](laser-control.md)를 참고하세요. `status`에는 `lasers` 상태도 포함됩니다.
+
 | 명령 | 동작 |
 | --- | --- |
 | `status` | 접속/부팅 UUID, 설치·측정 상태, 현재각 유효성, 제어 상태 |

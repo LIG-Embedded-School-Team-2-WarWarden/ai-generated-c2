@@ -65,6 +65,13 @@ void RequestTracker::result(const Peer &p, const pb::Envelope &e) {
             r.control_epoch() != b.control_epoch() || r.command_sequence() != b.command_sequence())
             return;
     }
+    if (e.has_laser_result()) {
+        const auto &r = e.laser_result();
+        const auto &b = q.laser_command();
+        if (r.control_session_id() != b.control_session_id() ||
+            r.control_epoch() != b.control_epoch() || r.command_sequence() != b.command_sequence())
+            return;
+    }
     if (out->has_detail() && out->detail().size() > 256)
         return;
     stamp(out->reported_at());

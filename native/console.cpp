@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
         std::cout << Json({{"ready", true},
                            {"runtime", "C++"},
                            {"port", transport.address().port},
-                           {"commands", "status targets point aim stop collect obs events "
+                           {"commands", "status targets point aim stop laser collect obs events "
                                         "clock-load clock-profile quit"}})
                          .dump()
                   << std::endl;

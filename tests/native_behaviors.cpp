@@ -171,6 +171,17 @@ struct Fixture {
             out->set_control_epoch(b.control_epoch());
             r = out->mutable_outcome();
         }
+        if (q.has_laser_command()) {
+            const auto &b = q.laser_command();
+            auto *out = e.mutable_laser_result();
+            out->set_control_session_id(b.control_session_id());
+            out->set_control_epoch(b.control_epoch());
+            out->set_command_sequence(b.command_sequence());
+            out->set_actual_laser_state(b.operation() == pb::LaserCommand::OPERATION_ON
+                                           ? pb::LASER_STATE_ON : pb::LASER_STATE_OFF);
+            out->set_state_observed_at(clock.utc());
+            r = out->mutable_outcome();
+        }
         if (q.has_pointing_command()) {
             auto &b = q.pointing_command();
             auto *out = e.mutable_pointing_result();
@@ -257,6 +268,78 @@ void test(const char *name, const std::function<void()> &fn) {
 } // namespace
 int main() {
     try {
+        test("laser requires both capability advertisements", [] {
+            Fixture f;
+            f.aim();
+            f.peer().cap->set_laser_control_supported(true);
+            bool rejected = false;
+            try { f.engine.command("laser on 201 1000"); }
+            catch (const std::invalid_argument &) { rejected = true; }
+            check(rejected && f.transport.count(pb::Envelope::kLaserCommand) == 0,
+                  "laser sent to unadvertised peer");
+            f.peer().laser_supported = true;
+            f.peer().cap->set_laser_control_supported(false);
+            rejected = false;
+            try { f.engine.command("laser on 201 1000"); }
+            catch (const std::invalid_argument &) { rejected = true; }
+            check(rejected, "missing capability report accepted");
+        });
+        test("laser validates duration and correlates session epoch sequence", [] {
+            Fixture f; f.aim();
+            f.peer().laser_supported = true;
+            f.peer().cap->set_laser_control_supported(true);
+            for (auto duration : {"0", "5001", "1.5", "nan"}) {
+                bool rejected = false;
+                try { f.engine.command(std::string("laser on 201 ") + duration); }
+                catch (const std::exception &) { rejected = true; }
+                check(rejected, "invalid laser duration accepted");
+            }
+            f.engine.command("laser on 201 1000");
+            auto q = f.transport.last(pb::Envelope::kLaserCommand);
+            check(q.laser_command().command_sequence() == 1 &&
+                      q.laser_command().duration_ms() == 1000, "laser sequence not independent");
+            auto e = f.reply(q);
+            e.mutable_laser_result()->set_control_epoch(99);
+            f.engine.requests.result(f.peer(), e);
+            check(f.engine.requests.has("201", pb::Envelope::kLaserResult), "foreign epoch accepted");
+            f.result(q);
+            check(!f.engine.requests.has("201", pb::Envelope::kLaserResult), "laser result not handled");
+            check(f.engine.snapshot()["lasers"]["201"]["state"] == "LASER_STATE_UNKNOWN",
+                  "result inferred telemetry state");
+        });
+        test("laser telemetry expires and cannot regress with UDP reordering", [] {
+            Fixture f; f.aim();
+            f.peer().laser_supported = true;
+            f.peer().cap->set_laser_control_supported(true);
+            f.engine.command("laser on 201 1000");
+            auto c = f.engine.effector.sessions.at("201");
+            pb::LaserStatus s;
+            s.set_device_id("201"); s.set_control_session_id(c->session);
+            s.set_control_epoch(c->epoch); s.set_last_accepted_sequence(1);
+            s.set_reported_at(f.clock.utc()); s.set_state_observed_at(f.clock.utc());
+            s.set_laser_state(pb::LASER_STATE_ON); s.set_remaining_duration_ms(1000);
+            f.engine.effector.laser_status(f.peer(), s);
+            check(f.engine.snapshot()["lasers"]["201"]["state"] == "LASER_STATE_ON", "status ignored");
+            s.set_laser_state(pb::LASER_STATE_OFF);
+            f.engine.effector.laser_status(f.peer(), s);
+            check(f.engine.snapshot()["lasers"]["201"]["state"] == "LASER_STATE_ON", "equal timestamp regressed");
+            f.clock.advance(1.1);
+            check(f.engine.snapshot()["lasers"]["201"]["state"] == "LASER_STATE_UNKNOWN", "stale state displayed");
+        });
+        test("STOP cancels pending laser ON retries and sends OFF", [] {
+            Fixture f; f.aim();
+            f.peer().laser_supported = true;
+            f.peer().cap->set_laser_control_supported(true);
+            f.engine.command("laser on 201 1000");
+            f.engine.command("stop 201");
+            auto q = f.transport.last(pb::Envelope::kLaserCommand).laser_command();
+            check(q.operation() == pb::LaserCommand::OPERATION_OFF && q.command_sequence() == 2 &&
+                      !q.has_duration_ms(), "STOP did not supersede ON");
+            f.clock.advance(.21);
+            f.engine.requests.tick(f.engine.devices.peers);
+            check(f.transport.last(pb::Envelope::kLaserCommand).laser_command().operation() ==
+                      pb::LaserCommand::OPERATION_OFF, "ON retried after STOP");
+        });
         test("ACCEPTED suppresses retry but keeps completion deadline", [] {
             Fixture f;
             int n = 0;
