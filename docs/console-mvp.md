@@ -1,11 +1,12 @@
-# Team ICD 1.0 콘솔 MVP
+# Team ICD 1.0 C++ 콘솔 MVP
 
 ## 시연 시나리오
 
-저장소 루트에서 `./scripts/setup-team.ps1`, `./scripts/build.ps1` 실행 후 각각 별도 터미널을 사용합니다.
+C2 실행에는 Python이 필요 없습니다. 더미 시험에는 `./scripts/setup-team.ps1`을 먼저 실행합니다.
+`./scripts/build.ps1 -BuildDir build/native`로 빌드한 뒤 각각 별도 터미널을 사용합니다.
 
 ```powershell
-./build/live/Release/c2_mvp_console.exe
+./build/native/Release/c2_mvp_console.exe
 ./.venv-team/Scripts/python.exe scripts/team_dummy.py OBS
 ./.venv-team/Scripts/python.exe scripts/team_dummy.py EFF
 ```
@@ -20,9 +21,12 @@
 5. `aim 201` → CONTROL_OPEN 완료 확인 → 최신 관측마다 최대 5Hz로 POINTING_COMMAND POINT.
 6. `status`에서 RUNNING과 장치가 보고한 각도를 확인합니다.
 7. `stop 201` → 이전 POINT 재전송 취소 → 같은 제어 세션에서 더 큰 순번의 STOP → 결과와 후속 정지 상태 확인 후 STOPPED.
-8. `quit`은 지향 정지를 요청·확인하고 수집 중지를 요청한 뒤 종료합니다. 응답 미확인은 마지막 상태 출력에 남습니다.
+8. `quit`과 입력 EOF는 지향 정지를 요청·확인하고 수집 중지를 요청한 뒤 종료합니다. Linux의 Ctrl+C도 같은 정리 경로를 사용합니다. 응답 미확인은 마지막 상태 출력에 남습니다.
 
 ## 명령
+
+레이저 명령 `laser on 201 DURATION_MS`, `laser off 201`, `laser status 201`와 지원 조건은
+[레이저 운용 안내](laser-control.md)를 참고하세요. `status`에는 `lasers` 상태도 포함됩니다.
 
 | 명령 | 동작 |
 | --- | --- |
@@ -32,11 +36,14 @@
 | `aim 201 [object-UUID]` | 단일 물체 연속 지향 시작. 선택 시 UUID 일치 필수 |
 | `stop 201` | 지향 중지. 수집은 계속. STOP_UNCONFIRMED이면 다시 요청 가능 |
 | `collect stop` / `collect start` | 지향 중지 요청 후 측정 중지 / 새 수집 세션 시작 |
+| `obs point PAN TILT` | EFF 정지·수집 중지 확인 → OBS 유한 이동·실측 정지 확인 → 수집 재개 |
+| `obs stop` / `obs status` | OBS 이동·수집 정지 요청 / 단계·현재각·관측 상태 확인 |
+| `clock-profile 101 profile.json` | firmware와 같은 검증 프로파일을 현재 boot/session에 연결 |
 | `events` | 최근 요청·결과·거부 진단 |
 | `clock-load 101 evidence.json` | 현재 boot/session에 대한 검증된 센서 시각 매핑 증빙 적용 |
 | `quit` | 지향·측정 정리 후 종료 |
 
-GUI, 다중 객체 선택·재획득, 이동 OBS, GUI IPC, 녹화/재생은 이번 범위에서 제외했습니다.
+GUI, 다중 객체 선택·재획득, 이동 중 OBS 취득·비영점 OBS 자동 지향, GUI IPC, 녹화/재생은 이번 범위에서 제외했습니다.
 현재 MVP는 물체가 하나일 때만 aim을 시작하며, 프레임 사이 0.5m 이내 단일 검출을 같은 물체로 연결합니다.
 이 단순 연결은 원본 LiDAR BoxTracker 전체를 가져온 것이 아니며, 교차·가림·동일 위치의 물체 교체를 판별하지 못합니다.
 소실·모호함·시각 불신·장치/현재각 만료·명령 미확인 후에는 자동 재개하지 않습니다.
@@ -68,7 +75,7 @@ tilt = atan2(up, hypot(forward, left))
 
 두 장치 축이 같으면 위치를 빼는 계산으로 줄어듭니다. SDK 축을 임의로 x=전방이라고 가정하지 않습니다.
 `configs/team-demo.json`의 축과 위치는 합성 데이터 예시입니다. 실제 장비 보정값이 아닙니다.
-OBS는 측정된 pan=tilt=0의 고정 관측만 지원합니다. 물체 중심은 그대로 재사용한 Detector가 반환한 검출 점들의 평균입니다.
+OBS 자동 지향은 측정된 pan=tilt=0의 고정 관측만 지원합니다. OBS 자체는 CLI로 이동할 수 있습니다. 물체 중심은 그대로 재사용한 Detector가 반환한 검출 점들의 평균입니다.
 출처: `vendor/lidar/ORIGIN.md`. 검출 헤더는 원본과 동일합니다.
 
 ## 실제 OBS/EFF 연결 시 필요한 것
@@ -79,7 +86,8 @@ OBS는 측정된 pan=tilt=0의 고정 관측만 지원합니다. 물체 중심�
 허용각과 실제 완료 판정 timeout을 CAPABILITY_REPORT로 보고해야 합니다.
 
 기본 합성 시각 프로파일은 loopback에서만 허용됩니다. 실물 프레임은 검증된 시각 매핑 없이 DISPLAY_ONLY로 처리합니다.
-clock-load 증빙 파일에는 다음 값이 필요합니다. 예시 값으로 검증을 대신하지 마세요.
+firmware의 취득 프로파일은 `clock-profile 101 profile.json`으로 읽을 수 있습니다. 유효기간과 센서 설정을 확인하고 현재 boot/session에 연결합니다.
+기존 `clock-load` 증빙 파일에는 다음 값이 필요합니다. 예시 값으로 검증을 대신하지 마세요.
 
 ```text
 id, boot_id, connection_session_id, evidence,
@@ -97,11 +105,11 @@ offset_seconds, uncertainty_ms, sync_type, sync_state, frame_protocol_version
 ## 실행 검증
 
 ```powershell
-./.venv-team/Scripts/python.exe tests/test_team_mvp.py --detector build/live/Release/c2_detector_worker.exe
+./.venv-team/Scripts/python.exe tests/test_native_mvp.py --console build/native/Release/c2_mvp_console.exe
 ```
 
 테스트는 생성 Protobuf + 실제 localhost UDP + 실제 C++ Detector로 실행됩니다.
 순서 뒤바뀜/중복 조각, 연속 지향과 stop, 패킷 재전송 멱등성, 상태/Heartbeat 순번,
 대상 소실, 불완전/상충 프레임, 시각 정보 누락, ACCEPTED만 오는 경우와 STOP 응답 유실을 포함합니다.
-콘솔과 OBS/EFF 더미를 각각 독립 프로세스로 실행해 stdin으로 명령을 넣고, 수집 중지/재시작과 종료까지 검사합니다.
+C++ 콘솔을 독립 프로세스로 실행하고 Python OBS/EFF 더미와 UDP로 연결해 stdin으로 명령을 넣고, 수집 중지/재시작과 종료까지 검사합니다.
 설치 revision 변경 시 추가 지향을 차단하는 경우도 검사합니다.

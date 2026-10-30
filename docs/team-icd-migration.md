@@ -19,7 +19,7 @@
 | AttackCommand STOP | 같은 controlSession/epoch, 증가한 commandSequence의 STOP |
 | 10Hz 업데이트 | 최대 5Hz, 이전 명령 최종 결과 확인 |
 | timestamp 기반 상태 갱신 | uint64 Heartbeat/sampleSequence 독립 중복·역순 제거 |
-| GUI와 공유한 구형 runtime | 독립 team_mvp 콘솔, C++ LiDAR Detector 재사용 |
+| GUI와 공유한 구형 runtime | 독립 C++ 콘솔, C++ LiDAR Detector 직접 재사용 |
 
 로컬 proto/raw_cloud.proto, raw_cloud_wire C++ 코덱, 이전 raw 송신 스크립트,
 C2 폴더에 있던 보드용 raw SDK 어댑터 및 해당 구형 테스트를 제거했습니다.
@@ -27,7 +27,8 @@ C2 폴더에 있던 보드용 raw SDK 어댑터 및 해당 구형 테스트를 �
 
 공용 schema는 MVP에 필요한 **장치 UDP 부분집합**입니다. GUI IPC, OBS 이동 추적,
 전체 OBS_MODE_STATUS, 비상 래치 해제, 저장/재생까지 ICD 전체를 구현한 것은 아닙니다.
-새 콘솔은 표시용 포인터의 방향 제어만 제공하며 레이저 출력/점등 명령을 추가하지 않습니다.
+새 콘솔은 표시용 포인터의 방향 제어와 선택적 교육용 저출력 레이저 ON/OFF/상태 조회를 제공합니다.
+레이저 지원 기능 확인·사용 조건·검증 범위는 [레이저 운용 안내](laser-control.md)에 정리합니다.
 수동 point 명령도 새 제어 세션 경로로 유지하며, raw→검출→aim→stop 시연을 우선 검증합니다.
 
 게시 순서는 공용 protobuf 변경 커밋/push → C2 submodule 참조 갱신 → C2 변경 커밋/push입니다.
