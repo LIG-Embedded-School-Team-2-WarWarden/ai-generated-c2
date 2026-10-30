@@ -19,7 +19,7 @@ def iso(seconds):
 
 
 class Peer:
-    def __init__(self, role, c2=("127.0.0.1", 5000), device=None):
+    def __init__(self, role, c2=("127.0.0.1", 5000), device=None, *, capabilities=()):
         if not ipaddress.ip_address(c2[0]).is_loopback:
             raise ValueError("synthetic peers are loopback only")
         self.role, self.c2 = role, c2
@@ -57,6 +57,7 @@ class Peer:
         self.last_status = None
         self.last_chunks = []
         self.register = pb.RegisterRequest(
+            capabilities=capabilities,
             request_id=uid(),
             device_id=self.device,
             role=pb.ROLE_OBS if role == "OBS" else pb.ROLE_EFF,

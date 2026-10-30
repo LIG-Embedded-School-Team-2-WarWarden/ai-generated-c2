@@ -2,6 +2,10 @@
 #include <csignal>
 #include <fstream>
 #include <iostream>
+#include <filesystem>
+#ifdef _WIN32
+#include "bridge.hpp"
+#endif
 #ifndef _WIN32
 #include <cerrno>
 #include <poll.h>
@@ -69,12 +73,16 @@ int main(int argc, char **argv) {
     try {
         std::string config_file = "configs/team-demo.json", bind = "127.0.0.1";
         int port = 5000;
+        bool gui_enabled = false, headless = false;
+        std::string stop_file;
         for (int i = 1; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--help") {
-                std::cout << "c2_mvp_console --config FILE --bind IPv4 --asset-port PORT\n";
+                std::cout << "c2_mvp_console --config FILE --bind IPv4 --asset-port PORT [--gui --headless --stop-file FILE]\n";
                 return 0;
             }
+            if (a == "--gui") { gui_enabled = true; continue; }
+            if (a == "--headless") { headless = true; continue; }
             require(i + 1 < argc, "option value missing");
             std::string v = argv[++i];
             if (a == "--config")
@@ -83,17 +91,27 @@ int main(int argc, char **argv) {
                 bind = v;
             else if (a == "--asset-port")
                 port = std::stoi(v);
+            else if (a == "--stop-file")
+                stop_file = v;
             else
                 throw std::invalid_argument("unknown option: " + a);
         }
         std::ifstream file(config_file);
         require(file.good(), "cannot open config: " + config_file);
         auto config = Config::parse(Json::parse(file));
+        require(!headless || gui_enabled, "--headless requires --gui");
+#ifndef _WIN32
+        require(!gui_enabled, "GUI IPC requires Windows");
+#endif
         SystemClock clock;
         UdpTransport transport(bind, port);
         LidarDetector detector;
         RelativePointingSolver solver;
         Engine engine(std::move(config), clock, transport, detector, solver);
+#ifdef _WIN32
+        std::unique_ptr<GuiBridge> gui;
+        if (gui_enabled) gui = std::make_unique<GuiBridge>(engine);
+#endif
         std::mutex mutex;
         std::atomic<bool> running = true;
         std::signal(SIGINT, signal_handler);
@@ -110,6 +128,9 @@ int main(int argc, char **argv) {
                             engine.log("rejected", e.what());
                         }
                     engine.tick();
+#ifdef _WIN32
+                    if (gui) gui->tick();
+#endif
                 } catch (const std::exception &e) {
                     std::lock_guard lock(mutex);
                     engine.log("runtime_error", e.what());
@@ -122,6 +143,7 @@ int main(int argc, char **argv) {
         });
         std::cout << Json({{"ready", true},
                            {"runtime", "C++"},
+                           {"gui_shared_memory_version", gui_enabled ? 2 : 0},
                            {"port", transport.address().port},
                            {"commands", "status targets point aim stop laser collect obs events "
                                         "clock-load clock-profile quit"}})
@@ -129,7 +151,13 @@ int main(int argc, char **argv) {
                   << std::endl;
         try {
             ConsoleInput input;
-            while (auto line = input.next()) {
+            if (headless) {
+                while (!interrupted && (stop_file.empty() || !std::filesystem::exists(stop_file)))
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            while (!headless) {
+                auto line = input.next();
+                if (!line) break;
                 if (*line == "quit" || *line == "exit")
                     break;
                 try {
