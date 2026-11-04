@@ -569,6 +569,50 @@ int main() {
             check(std::abs(tilt - std::atan2(.1, std::hypot(3, .1)) * 180 / std::acos(-1)) < 1e-9,
                   "tilt changed");
         });
+        test("effector mounting offset shifts the pointing origin", [] {
+            auto c = config();
+            auto &obs = c.devices.at("101");
+            auto &eff = c.devices.at("201");
+            obs.position = {10, 20, 30};
+            obs.rotation = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            eff.position = {12, 22, 32};
+            eff.offset = {.5, -.25, 1};
+            // Sensor origin is (12.5, 21.75, 33); the object is (3, 4, 5) beyond it.
+            RelativePointingSolver solver;
+            auto [pan, tilt] = solver.solve({"id", 5.5, 5.75, 8, 48}, obs, eff);
+            check(std::abs(pan - 53.13010235415598) < 1e-9, "effector offset pan ignored");
+            check(std::abs(tilt - 45) < 1e-9, "effector offset tilt ignored");
+        });
+        test("effector mounting offset follows the installation rotation", [] {
+            auto c = config();
+            auto &obs = c.devices.at("101");
+            auto &eff = c.devices.at("201");
+            obs.rotation = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            eff.position = {2, 3, 4};
+            eff.rotation = {0, -1, 0, 1, 0, 0, 0, 0, 1};
+            eff.offset = {1, 2, 3};
+            // A 90-degree installation rotation puts the sensor at (0, 4, 7).
+            // The object's displacement from it is (4, 3, 5) in effector axes.
+            RelativePointingSolver solver;
+            auto [pan, tilt] = solver.solve({"id", -3, 8, 12, 48}, obs, eff);
+            check(std::abs(pan - 36.86989764584402) < 1e-9, "effector offset frame wrong");
+            check(std::abs(tilt - 45) < 1e-9, "rotated effector offset tilt wrong");
+        });
+        test("observation and effector mounting offsets compose", [] {
+            auto c = config();
+            auto &obs = c.devices.at("101");
+            auto &eff = c.devices.at("201");
+            obs.offset = {.5, 1, 2};
+            eff.position = {12, 22, 32};
+            eff.rotation = {0, -1, 0, 1, 0, 0, 0, 0, 1};
+            eff.offset = {1, 2, 3};
+            // OBS mounting maps this object to (6, 26, 40) in project coordinates.
+            // FCS sensor origin is (10, 23, 35), leaving local displacement (3, 4, 5).
+            RelativePointingSolver solver;
+            auto [pan, tilt] = solver.solve({"id", 25.5, 39, 4, 48}, obs, eff);
+            check(std::abs(pan - 53.13010235415598) < 1e-9, "combined offsets pan wrong");
+            check(std::abs(tilt - 45) < 1e-9, "combined offsets tilt wrong");
+        });
         test("expired acquisition profile blocks latest", [] {
             Fixture f;
             auto &p = f.peer("101");

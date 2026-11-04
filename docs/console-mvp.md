@@ -73,7 +73,24 @@ pan  = atan2(left, forward)
 tilt = atan2(up, hypot(forward, left))
 ```
 
-두 장치 축이 같으면 위치를 빼는 계산으로 줄어듭니다. SDK 축을 임의로 x=전방이라고 가정하지 않습니다.
+설정의 `position`은 공통 좌표계에서 장비 기준점의 설치 위치이고,
+`sensor_offset`은 장비 기준점에서 실제 센서·포인터 기준점까지의 고정 장착 오프셋입니다.
+둘 다 미터 단위 `[X,Y,Z]`이며, 오프셋은 각 장비의 로컬 축으로 입력합니다.
+설치 방향은 `rotation`으로 적용합니다. OBS(`101`)와 FCS/EFF(`201`)의 오프셋을 각각 반영합니다.
+
+```text
+물체 공통좌표 = OBS.position + OBS.rotation × (측정좌표 + OBS.sensor_offset)
+FCS 센서 위치 = FCS.position + FCS.rotation × FCS.sensor_offset
+(forward,left,up) = FCS.rotation의 역회전 × (물체 공통좌표 − FCS 센서 위치)
+```
+
+예를 들어 FCS 장비 기준점이 `[0,0.1,0]`이고 센서가 장비 로컬 축에서 위로 5cm 떨어져 있으면,
+`201.position`은 그대로 두고 `201.sensor_offset`을 `[0,0,0.05]`로 설정합니다.
+실행 시 `--config`로 선택한 파일을 수정하고 C2를 재시작하면 자동 `aim` 계산에 반영됩니다.
+수동 `point`는 입력 각도를 그대로 사용합니다. GUI의 장비 위치 표시는 `position`을 사용합니다.
+이 오프셋은 설치 좌표계에 고정된 변위이며, 팬·틸트 회전에 따라 이동하는 장착점의 기구학은 포함하지 않습니다.
+
+두 장치 축이 같고 오프셋이 0이면 위치를 빼는 계산으로 줄어듭니다. SDK 축을 임의로 x=전방이라고 가정하지 않습니다.
 `configs/team-demo.json`의 축과 위치는 합성 데이터 예시입니다. 실제 장비 보정값이 아닙니다.
 OBS 자동 지향은 측정된 pan=tilt=0의 고정 관측만 지원합니다. OBS 자체는 CLI로 이동할 수 있습니다. 물체 중심은 그대로 재사용한 Detector가 반환한 검출 점들의 평균입니다.
 출처: `vendor/lidar/ORIGIN.md`. 검출 헤더는 원본과 동일합니다.

@@ -69,7 +69,11 @@ std::string request_id(const pb::Envelope &);
 struct Installation {
     std::string role, calibration, profile;
     unsigned revision = 0;
-    std::array<double, 3> position{}, offset{};
+    // Device reference position in project coordinates, in metres.
+    std::array<double, 3> position{};
+    // Fixed sensor/pointing-origin displacement in the device's local axes, in metres.
+    std::array<double, 3> offset{};
+    // Row-major device-to-project rotation.
     std::array<double, 9> rotation{};
 };
 struct Config {
