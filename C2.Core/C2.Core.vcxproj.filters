@@ -1,0 +1,268 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <ItemGroup>
+    <ClCompile Include="Sources\fcs_client.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Sources\fcs_protocol.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Sources\udp_transport.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\c2\fcs_client.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\c2\fcs_protocol.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\c2\rdr_client.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\c2\rdr_session.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\c2\udp_transport.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\adl_serializer.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\byte_container_with_subtype.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\abi_macros.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\conversions\from_json.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\conversions\to_chars.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\conversions\to_json.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\exceptions.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\hash.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\input\binary_reader.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\input\input_adapters.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\input\json_sax.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\input\lexer.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\input\parser.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\input\position_t.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\iterators\internal_iterator.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\iterators\iter_impl.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\iterators\iteration_proxy.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\iterators\iterator_traits.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\iterators\json_reverse_iterator.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\iterators\primitive_iterator.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\json_pointer.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\json_ref.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\macro_scope.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\macro_unscope.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\meta\call_std\begin.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\meta\call_std\end.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\meta\cpp_future.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\meta\detected.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\meta\identity_tag.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\meta\is_sax.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\meta\std_fs.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\meta\type_traits.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\meta\void_t.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\output\binary_writer.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\output\output_adapters.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\output\serializer.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\string_concat.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\string_escape.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\detail\value_t.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\json.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\json_fwd.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\ordered_map.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\thirdparty\hedley\hedley.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\nlohmann\thirdparty\hedley\hedley_undef.hpp">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files" />
+    <Filter Include="Header Files" />
+    <Filter Include="Third Party" />
+  </ItemGroup>
+</Project>

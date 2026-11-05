@@ -1,22 +1,32 @@
 {
-  "simulation": true,
-  "observer": "101",
-  "max_clock_uncertainty_ms": 10,
-  "devices": {
-    "101": {
-      "role": "OBS", "revision": 1,
-      "calibration_id": "synthetic-obs-zero-v1",
-      "profile": "synthetic-organized-v1",
-      "position": [0,0,0],
-      "sensor_offset": [0,0,0],
-      "rotation": [0,0,1,1,0,0,0,1,0]
+  "assignment_enabled": false,
+  "rdr": {
+    "protocol": "edde24",
+    "local": {
+      "ip": "127.0.0.1",
+      "port": 0
     },
-    "201": {
-      "role": "EFF", "revision": 1,
-      "calibration_id": "synthetic-eff-zero-v1",
-      "position": [0,0.1,0],
-      "sensor_offset": [0,0,0],
-      "rotation": [1,0,0,0,1,0,0,0,1]
+    "peer": {
+      "ip": "127.0.0.1",
+      "port": 1000
+    }
+  },
+  "fcs": {
+    "protocol": "effe",
+    "enabled": true,
+    "local": {
+      "ip": "127.0.0.1",
+      "port": 0
+    },
+    "peer": {
+      "ip": "127.0.0.1",
+      "port": 2000
+    },
+    "limits": {
+      "elevation_min": 0,
+      "elevation_max": 60,
+      "azimuth_min": 120,
+      "azimuth_max": 240
     }
   }
 }

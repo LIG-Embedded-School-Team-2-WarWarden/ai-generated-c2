@@ -1,0 +1,125 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{01F573EE-4296-599A-BEC8-A72C0EC51F6A}</ProjectGuid>
+    <ProjectName>C2.Core</ProjectName>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <UseDebugLibraries>false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <C2Root>$(MSBuildThisFileDirectory)..\</C2Root>
+    <OutDir>$(C2Root)x64\$(Configuration)\</OutDir>
+    <IntDir>$(C2Root)obj\$(ProjectName)\$(Configuration)\</IntDir>
+    <TargetName>C2.Core</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(C2Root)C2.Core\Include;$(C2Root)C2.Ipc\Headers;$(C2Root)C2.Console\Headers;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>NDEBUG;WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(C2Root)C2.Core\Include;$(C2Root)C2.Ipc\Headers;$(C2Root)C2.Console\Headers;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="Sources\fcs_client.cpp" />
+    <ClCompile Include="Sources\fcs_protocol.cpp" />
+    <ClCompile Include="Sources\udp_transport.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\c2\fcs_client.hpp" />
+    <ClInclude Include="Include\c2\fcs_protocol.hpp" />
+    <ClInclude Include="Include\c2\rdr_client.hpp" />
+    <ClInclude Include="Include\c2\rdr_session.hpp" />
+    <ClInclude Include="Include\c2\udp_transport.hpp" />
+    <ClInclude Include="Include\nlohmann\adl_serializer.hpp" />
+    <ClInclude Include="Include\nlohmann\byte_container_with_subtype.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\abi_macros.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\conversions\from_json.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\conversions\to_chars.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\conversions\to_json.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\exceptions.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\hash.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\input\binary_reader.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\input\input_adapters.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\input\json_sax.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\input\lexer.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\input\parser.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\input\position_t.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\iterators\internal_iterator.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\iterators\iter_impl.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\iterators\iteration_proxy.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\iterators\iterator_traits.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\iterators\json_reverse_iterator.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\iterators\primitive_iterator.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\json_pointer.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\json_ref.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\macro_scope.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\macro_unscope.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\meta\call_std\begin.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\meta\call_std\end.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\meta\cpp_future.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\meta\detected.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\meta\identity_tag.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\meta\is_sax.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\meta\std_fs.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\meta\type_traits.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\meta\void_t.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\output\binary_writer.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\output\output_adapters.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\output\serializer.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\string_concat.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\string_escape.hpp" />
+    <ClInclude Include="Include\nlohmann\detail\value_t.hpp" />
+    <ClInclude Include="Include\nlohmann\json.hpp" />
+    <ClInclude Include="Include\nlohmann\json_fwd.hpp" />
+    <ClInclude Include="Include\nlohmann\ordered_map.hpp" />
+    <ClInclude Include="Include\nlohmann\thirdparty\hedley\hedley.hpp" />
+    <ClInclude Include="Include\nlohmann\thirdparty\hedley\hedley_undef.hpp" />
+  </ItemGroup>
+  <ItemGroup />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
