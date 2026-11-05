@@ -1,0 +1,32 @@
+{
+  "assignment_enabled": false,
+  "rdr": {
+    "protocol": "edde24",
+    "local": {
+      "ip": "192.168.64.1",
+      "port": 1000
+    },
+    "peer": {
+      "ip": "192.168.64.129",
+      "port": 1000
+    }
+  },
+  "fcs": {
+    "protocol": "effe",
+    "enabled": true,
+    "local": {
+      "ip": "192.168.64.1",
+      "port": 2000
+    },
+    "peer": {
+      "ip": "192.168.0.103",
+      "port": 2000
+    },
+    "limits": {
+      "elevation_min": 0,
+      "elevation_max": 60,
+      "azimuth_min": 120,
+      "azimuth_max": 240
+    }
+  }
+}

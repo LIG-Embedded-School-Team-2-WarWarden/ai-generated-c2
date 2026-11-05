@@ -1,29 +1,16 @@
-name: Build and contracts
+name: Visual Studio binary ICD
 on: [push, pull_request]
 permissions:
   contents: read
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+  windows:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m pip install -r requirements-dev.txt
-      - run: python -m black --check --workers 1 tests/test_native_mvp.py
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libprotobuf-dev protobuf-compiler nlohmann-json3-dev
-      - run: cmake -S . -B build
-      - if: runner.os == 'Windows'
-        run: cmake -S . -B build -DC2_BUILD_LIVE=ON
-      - run: cmake --build build --config Release --parallel 2
-      - run: ctest --test-dir build -C Release --output-on-failure
-      - if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/run_udp_smoke.ps1 -BinDir ./build/Release
+      - uses: microsoft/setup-msbuild@v2
+      - run: msbuild ai-generated-c2.sln /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m
+      - shell: pwsh
+        run: ./scripts/test.ps1 -Configuration Release
