@@ -12,6 +12,9 @@
     <ClCompile Include="Sources\gui_v3.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Sources\rdr_live_diagnostics.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Sources\rdr_icd_contract.cpp">

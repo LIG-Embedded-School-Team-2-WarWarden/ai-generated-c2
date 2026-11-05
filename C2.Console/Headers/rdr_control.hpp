@@ -1,5 +1,6 @@
 #pragma once
 #include "c2/rdr_session.hpp"
+#include "rdr_coordinates.hpp"
 #include "protocol.hpp"
 #include <cmath>
 #include <functional>
@@ -51,7 +52,9 @@ public:
         }
     }
     bool operating() {
-        const auto state=driver_.snapshot();
+        return operating(driver_.snapshot());
+    }
+    bool operating(const c2::rdr::State& state) const {
         return state.connected && state.mode==2 && state.reporting && !stop_requested_;
     }
     void cancel_start() { start_phase_=StartPhase::none; }
@@ -112,26 +115,31 @@ public:
         return out;
     }
     void populate(c2::ipc::Payload& p) {
+        const auto state=driver_.snapshot();
+        populate(p,state,c2::rdr::correct_targets(state,
+            {p.rdr.position_x,p.rdr.position_y,p.rdr.position_z}));
+    }
+    void populate(c2::ipc::Payload& p, const c2::rdr::State& state,
+                  const std::vector<c2::rdr::CorrectedTarget>& targets) {
         // This adapter owns the RDR and target fields. Keep the station's FCS
         // status, selection and installation positions when both peers run.
-        p.targets={};p.target_count=0;const auto state=driver_.snapshot();
+        p.targets={};p.target_count=0;
         p.rdr_count=p.selected_rdr=1;p.rdr.id=1;
-        p.rdr.connected=p.rdr.enabled=state.connected;p.rdr.operating=operating();
+        p.rdr.connected=p.rdr.enabled=state.connected;p.rdr.operating=operating(state);
         // RDR wire angles are signed tenths of a degree (confirmed device ICD).
-        p.rdr.azimuth=state.pan==-32768?-32768:float(std::clamp(135-state.pan/10.,0.,270.));
+        p.rdr.azimuth=state.pan==-32768?-32768:float(std::clamp(135+c2::rdr::heading_degrees(state.pan/10.),0.,270.));
         p.rdr.elevation=state.tilt==-32768?-32768:float(state.tilt/10.);
-        std::vector<c2::rdr::Target> targets;
-        for(const auto& [id,t]:state.targets)targets.push_back(t);
-        std::stable_sort(targets.begin(),targets.end(),[](const auto&a,const auto&b){return (a.status==0)>(b.status==0);});
         for(const auto&t:targets) {
             if(p.target_count==c2::ipc::target_capacity)break;
             auto&v=p.targets[p.target_count++];v.id=t.id;v.rdr_id=1;
-            v.valid=p.rdr.operating && t.status==0;v.status=v.valid?0:t.status==3?3:2;
+            v.valid=p.rdr.operating && t.valid;v.status=v.valid?0:t.status==3?3:2;
             if(v.valid) {
-                v.x=float(t.x);v.y=float(t.y);v.z=float(t.z);
-                v.azimuth=float(std::round((135+std::atan2(t.x,t.z)*180/std::numbers::pi)*10)/10);
-                v.elevation=float(std::round(std::atan2(t.y,std::hypot(t.x,t.z))*180/std::numbers::pi*10)/10);
-                v.distance=float(std::sqrt(t.x*t.x+t.y*t.y+t.z*t.z));
+                // GUI XYZ is exclusively world coordinates, never sensor/relative XYZ.
+                v.x=float(t.world.east);v.y=float(t.world.north);v.z=float(t.world.up);
+                // Target table uses north=0 degrees without the map's display offset.
+                v.azimuth=float(std::round(std::atan2(t.relative.east,t.relative.north)*180/std::numbers::pi*10)/10);
+                v.elevation=float(std::round(std::atan2(t.relative.up,std::hypot(t.relative.east,t.relative.north))*180/std::numbers::pi*10)/10);
+                v.distance=float(std::hypot(t.relative.east,t.relative.north,t.relative.up));
             }
         }
     }

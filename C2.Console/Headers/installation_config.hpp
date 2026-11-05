@@ -11,8 +11,8 @@
 #include <nlohmann/json.hpp>
 
 // Common installation positions (forward,left,up) used by the map and FCS
-// assignment calculation. Incoming RDR targets are PAN-fixed but RDR-relative;
-// translate by RDR position, then subtract FCS position. Do not rotate again.
+// assignment calculation. Raw RDR targets are first rotated with their observation
+// PAN/TILT by sensor_to_base; translate that result, then subtract FCS position.
 struct InstallationConfig {
     std::array<double, 3> rdr_position{}, eff_position{};
     std::string observer_id, effector_id;

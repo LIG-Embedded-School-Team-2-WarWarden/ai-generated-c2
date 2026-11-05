@@ -30,6 +30,12 @@ class Board:
         self.requests = []
         self.wire = []
         self.echo_arguments = True
+        self.pan, self.tilt = 1980, 123
+        self.track_state = 1
+        # (ID, raw sensor XYZ, observation TILT, observation PAN).
+        self.observations = [(7, (.2427533743, -.5889764178, 2.1896256709), 123, 1980),
+                             (19, (1.5167365726, -.4773977290, 2.1895436917), 123, 1980)]
+        self.last_observed = 0
         self.error = None
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -37,7 +43,7 @@ class Board:
     def packet(self, kind, rx=0, a=0, b=0, result=0):
         self.tx = (self.tx + 1) & 65535
         return [kind, self.tx, rx, a, b, self.token >> 16, self.token & 65535,
-                result, 123, -153, int(self.connected) | (4 if self.reporting else 0) | (self.mode << 8), 0]
+                result, self.tilt, self.pan, int(self.connected) | (4 if self.reporting else 0) | (self.mode << 8), 0]
 
     def send(self, fields):
         if self.peer and not self.drop:
@@ -63,11 +69,22 @@ class Board:
                     self.send(response)
                 if self.connected and self.reporting and self.mode == 2 and not self.drop and now >= emit:
                     emit = now + 0.15
-                    for ident, xyz in [(7, (469, -109, 2229)), (19, (-750, 0, 2600))]:
+                    # Independent sensor-frame fixtures at observation PAN=1980,
+                    # TILT=123. Their world east/north/up positions are
+                    # (.469,2.229,-.109) and (-.750,2.600,0), respectively.
+                    for ident, xyz, tilt, pan in self.observations:
                         if ident in self.excluded:
                             continue
                         self.tx = (self.tx + 1) & 65535
-                        self.socket.sendto(struct.pack('!4H3fhhH6x', 0xDE03, self.tx, self.rx, ident, *(v / 1000 for v in xyz), 123, -153, 1), self.peer)
+                        state = self.track_state
+                        if state == 1:
+                            self.last_observed = now
+                        elif state == 2 and now - self.last_observed > 1.5:
+                            state = 0  # Predictions never renew observation support.
+                        self.socket.sendto(struct.pack('!4H3fhhHH4x', 0xDE03, self.tx, self.rx, ident,
+                            *(xyz if state else (0, 0, 0)),
+                            tilt if state else -32768, pan if state else -32768,
+                            int(state == 1), state), self.peer)
                 try:
                     data, source = self.socket.recvfrom(512)
                 except socket.timeout:

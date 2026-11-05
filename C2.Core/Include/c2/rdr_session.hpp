@@ -1,5 +1,6 @@
 #pragma once
-// RDR-ECS ICD revision 6: 24-byte controls, 32-byte float32 metre DE03.
+// RDR-ECS controls are 24 bytes. DE03 carries raw sensor XYZ, observation
+// PAN/TILT and TrackState in a 32-byte big-endian packet.
 #include <array>
 #include <span>
 #include <bit>
@@ -18,7 +19,14 @@ inline void word(Packet&p,unsigned n,uint16_t v){p.at(n)=uint8_t(v>>8);p.at(n+1)
 inline uint32_t token(std::span<const uint8_t> p){return (uint32_t(word(p,10))<<16)|word(p,12);}
 inline bool newer(uint16_t a,uint16_t b){auto d=uint16_t(a-b);return d&&d<32768;}
 inline int signed_word(std::span<const uint8_t> p,unsigned n){const int v=word(p,n);return v>=32768?v-65536:v;}
-struct Target {uint16_t id{};double x{},y{},z{},seen{};uint8_t status{2};};
+struct Target {
+    uint16_t id{};
+    double x{},y{},z{}; // Raw metres: mirrored X, up, forward; normalize X at world conversion.
+    double seen{}; // Last received DE03, only for the local receive timeout.
+    int pan{-32768},tilt{-32768}; // Observation pose, signed tenths of a degree.
+    uint16_t detected{},track_state{}; // 0 LOST, 1 OBSERVED, 2 PREDICTED.
+    uint8_t status{2};
+};
 struct State {
     uint64_t generation{}; // Local session lifetime; never serialized on the wire.
     bool connected{},reporting{};uint16_t mode{},motor{2};
@@ -42,7 +50,10 @@ class Session {
         word(p,10,uint16_t(token_>>16));word(p,12,uint16_t(token_));
         issued_.push_back(sequence_);if(issued_.size()>256)issued_.pop_front();return p;
     }
-    void invalidate(){for(auto& [id,t]:state_.targets){t.x=t.y=t.z=0;t.status=state_.excluded.count(id)?3:2;}}
+    static void invalidate(Target& t,uint8_t status=2){
+        t.x=t.y=t.z=0;t.pan=t.tilt=-32768;t.detected=t.track_state=0;t.status=status;
+    }
+    void invalidate(){for(auto& [id,t]:state_.targets)invalidate(t,state_.excluded.count(id)?3:2);}
     void fresh_session(double now){
         if(++token_==0)++token_;
         sequence_=uint16_t(token_^ (token_>>16));have_data_=have_status_=false;
@@ -77,19 +88,24 @@ public:
         if(p.size()<6)return;
         const auto msg=word(p,0),rx=word(p,4),tx=word(p,2);
         if(msg==0xDE03){
-            if(p.size()!=32||!state_.connected||state_.mode!=2||!state_.reporting||!word(p,6)||word(p,24)>1)return;
-            for(unsigned i=26;i<32;++i)if(p[i])return;
+            if(p.size()!=32||!state_.connected||state_.mode!=2||!state_.reporting||!word(p,6))return;
+            for(unsigned i=28;i<32;++i)if(p[i])return;
+            const auto detected=word(p,24),track_state=word(p,26);
+            if(track_state>2||detected!=(track_state==1?1:0))return;
             auto coordinate=[&](unsigned n){return std::bit_cast<float>((uint32_t(word(p,n))<<16)|word(p,n+2));};
             const float x=coordinate(8),y=coordinate(12),z=coordinate(16);
             if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z))return;
+            const int tilt=signed_word(p,20),pan=signed_word(p,22);
+            if(track_state==0&&(x!=0||y!=0||z!=0||tilt!=-32768||pan!=-32768))return;
             if(std::find(issued_.begin(),issued_.end(),rx)==issued_.end())return;
             if(have_data_&&!newer(tx,data_sequence_))return;
             have_data_=true;data_sequence_=tx;auto id=word(p,6);
             if(state_.excluded.count(id))return;
             if(!state_.targets.count(id)&&state_.targets.size()>=10)return;
             auto&t=state_.targets[id];t.id=id;t.seen=now;
-            t.status=word(p,24)?0:2;
-            t.x=t.status?0:x;t.y=t.status?0:y;t.z=t.status?0:z;
+            t.detected=detected;t.track_state=track_state;
+            t.status=track_state?0:2;
+            t.x=x;t.y=y;t.z=z;t.pan=pan;t.tilt=tilt;
             return;
         }
         if(p.size()!=24||token(p)!=token_||word(p,14)>8||word(p,22))return;
@@ -114,7 +130,7 @@ public:
             const auto id=word(operation_->packet,6);
             if(word(operation_->packet,8))state_.excluded.erase(id);else state_.excluded.insert(id);
             if(state_.targets.count(id)||state_.targets.size()<10){
-                auto&t=state_.targets[id];t.id=id;t.seen=now;t.x=t.y=t.z=0;t.status=state_.excluded.count(id)?3:2;
+                auto&t=state_.targets[id];t.id=id;t.seen=now;invalidate(t,state_.excluded.count(id)?3:2);
             }
         }
         operation_.reset();
@@ -139,7 +155,11 @@ public:
         for(auto it=state_.targets.begin();it!=state_.targets.end();){
             auto&t=it->second;
             if(now-t.seen>60&&!state_.excluded.count(it->first)){it=state_.targets.erase(it);continue;}
-            if(now-t.seen>3&&t.status==0){t.status=2;t.x=t.y=t.z=0;}
+            // Sender owns the 1.5 s prediction limit from its last observation
+            // or point-cloud support. DE03 has no observation timestamp, so
+            // receipt of a prediction must not be treated as a new observation.
+            // This independent 3 s timeout only detects missing DE03 traffic.
+            if(now-t.seen>3&&t.status==0)invalidate(t);
             ++it;
         }
     }

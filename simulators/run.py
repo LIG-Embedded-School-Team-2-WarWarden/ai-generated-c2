@@ -14,6 +14,21 @@ from devices import Devices
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def station_config(rdr_port, fcs_port, real_fcs_config=None):
+    source=real_fcs_config or ROOT/'configs/team-demo.json'
+    config=json.loads(Path(source).read_text(encoding='utf-8-sig'))
+    config['rdr']['local']={'ip':'127.0.0.1','port':0}
+    config['rdr']['peer']={'ip':'127.0.0.1','port':rdr_port}
+    if real_fcs_config:
+        if config['fcs'].get('protocol')!='effe' or not config['fcs'].get('enabled',True):
+            raise ValueError('Real FCS configuration must enable the effe protocol')
+        # Preserve the real FCS local IP/port, peer and other configuration.
+    else:
+        config['fcs']['local']={'ip':'127.0.0.1','port':0}
+        config['fcs']['peer']={'ip':'127.0.0.1','port':fcs_port}
+    return config
+
+
 def write_json(path, data):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -36,9 +51,23 @@ def main():
     parser.add_argument('--gui', type=Path, help='WPF executable to launch')
     parser.add_argument('--headless', action='store_true', help='omit simulator control window')
     parser.add_argument('--isolated-ipc', action='store_true', help='use unique IPC names for automated checks without WPF')
-    parser.add_argument('--runtime', type=Path, default=ROOT / 'logs/simulator')
+    parser.add_argument('--runtime', type=Path)
+    parser.add_argument('--real-fcs',action='store_true',help='dummy lidar with physical FCS; only RDR is simulated')
+    parser.add_argument('--fcs-config',type=Path,default=ROOT/'configs/rdr-live.json',help='source configuration for the physical FCS')
+    parser.add_argument('--print-plan',action='store_true',help='show endpoints without opening sockets or starting C2')
     parser.add_argument('--duration', type=float, default=0, help='optional unattended run limit, seconds')
+    parser.add_argument('--target', nargs=4, action='append', metavar=('ID','X','Y','Z'),
+                        help='fixed target ID and world XYZ in metres; repeat for multiple targets')
     args = parser.parse_args()
+    args.runtime=args.runtime or ROOT/('logs/rdr-dummy-real-fcs' if args.real_fcs else 'logs/simulator')
+    try:
+        planned_config=station_config(0,0,args.fcs_config if args.real_fcs else None)
+    except (OSError,ValueError,KeyError) as error:
+        parser.error(str(error))
+    if args.print_plan:
+        print(json.dumps({'mode':'dummy-rdr/real-fcs' if args.real_fcs else 'dummy-rdr/dummy-fcs',
+            'rdr':'127.0.0.1:auto','fcs':planned_config['fcs'],'targets':args.target},ensure_ascii=False,indent=2))
+        return
     if args.isolated_ipc and args.gui:
         parser.error('--isolated-ipc cannot be used with the standard WPF GUI')
     if not args.console.is_file() or (args.gui and not args.gui.is_file()):
@@ -60,14 +89,22 @@ def main():
     control_file = args.runtime / 'control.json'
     state_file = args.runtime / 'simulator-state.json'
     control = {'scenario': 'normal', 'target_count': 10}
+    if args.target:
+        try:
+            control['targets']=[{'id':int(t[0]),'xyz':[float(v) for v in t[1:]]} for t in args.target]
+        except ValueError:
+            parser.error('--target requires integer ID and numeric world X Y Z')
     write_json(control_file, control)
-    devices = Devices()
-    config = json.loads((ROOT / 'configs/team-demo.json').read_text(encoding='utf-8'))
-    config['rdr']['peer']['port'] = devices.rdr_port
-    config['fcs']['peer']['port'] = devices.fcs_port
-    for section in ('rdr', 'fcs'):
-        config[section]['local'] = {'ip': '127.0.0.1', 'port': 0}
-        config[section]['peer']['ip'] = '127.0.0.1'
+    devices = Devices(enable_fcs=not args.real_fcs)
+    try:
+        devices.configure(**control)
+    except (ValueError,TypeError,KeyError) as error:
+        devices.close()
+        parser.error(str(error))
+    config=planned_config
+    config['rdr']['peer']['port']=devices.rdr_port
+    if not args.real_fcs:
+        config['fcs']['peer']['port']=devices.fcs_port
     config_path = args.runtime / 'config.json'
     write_json(config_path, config)
     exiting = False
@@ -83,6 +120,7 @@ def main():
     try:
         for name in ('c2.stdout.log', 'c2.stderr.log'):
             logs.append((args.runtime / name).open('w', encoding='utf-8'))
+        station_started_ms=int(time.time()*1000)
         station = subprocess.Popen([str(args.console.resolve()), '--config', str(config_path.resolve()),
             '--headless', '--stop-file', str(stop_file.resolve()),
             '--ipc-suffix', ipc_suffix,
@@ -97,25 +135,64 @@ def main():
             # Also use the default pipe when launching a GUI that supports overrides.
             gui_env.pop('AADC9_PIPE_NAME', None)
             children.append(subprocess.Popen([str(args.gui.resolve())], cwd=args.gui.resolve().parent, env=gui_env))
-        print(f'RDR/FCS 모의기: 127.0.0.1:{devices.rdr_port} / 127.0.0.1:{devices.fcs_port}', flush=True)
+        fcs_peer=config['fcs']['peer']
+        print(f'RDR 더미: 127.0.0.1:{devices.rdr_port} / FCS {"실장비" if args.real_fcs else "모의기"}: {fcs_peer["ip"]}:{fcs_peer["port"]}', flush=True)
         print(f'상태/시나리오: {args.runtime.resolve()}', flush=True)
         print('WPF의 라이다 구동 버튼으로 시작합니다. 종료: 제어창 닫기 또는 Ctrl+C.', flush=True)
         if not args.headless:
             import tkinter as tk
             from tkinter import ttk
             panel = tk.Tk()
-            panel.title('RDR / FCS 모의기')
-            panel.geometry('420x410')
-            ttk.Label(panel, text='RDR / FCS 모의기', font=('맑은 고딕', 17, 'bold')).pack(pady=12)
-            ttk.Label(panel, text='로컬 UDP → C2 → WPF\n실제 장비 출력 없이 화면과 통신을 확인합니다.', justify='center').pack()
+            title='라이다 더미 / FCS 실장비' if args.real_fcs else 'RDR / FCS 모의기'
+            panel.title(title)
+            panel.geometry('440x590')
+            ttk.Label(panel, text=title, font=('맑은 고딕', 17, 'bold')).pack(pady=12)
+            description=(f'라이다만 더미입니다. FCS: {fcs_peer["ip"]}:{fcs_peer["port"]}\nGUI에서 표적 할당을 누르면 실장비가 이동합니다.'
+                if args.real_fcs else '로컬 UDP → C2 → WPF\n실제 장비 출력 없이 화면과 통신을 확인합니다.')
+            ttk.Label(panel, text=description, justify='center').pack()
             status = tk.StringVar()
             ttk.Label(panel, textvariable=status, justify='left').pack(pady=12)
             def choose(scenario):
                 control['scenario'] = scenario
                 write_json(control_file, control)
-            for label, scenario in [('정상 · 표적 10개', 'normal'), ('표적 소실', 'empty'),
-                ('RDR 연결 끊김', 'rdr-offline'), ('FCS 연결 끊김', 'fcs-offline'), ('FCS 결함', 'fcs-fault')]:
+            scenarios=[('정상 · 지정 표적' if args.target else '정상 · 표적 10개','normal'),('표적 소실','empty'),('RDR 연결 끊김','rdr-offline')]
+            if not args.real_fcs:scenarios += [('FCS 연결 끊김','fcs-offline'),('FCS 결함','fcs-fault')]
+            for label, scenario in scenarios:
                 ttk.Button(panel, text=label, command=lambda value=scenario: choose(value)).pack(fill='x', padx=35, pady=3)
+            ttk.Label(panel,text='표적 월드 위치 (m): X 오른쪽 / Y 앞쪽 / Z 위쪽').pack(pady=(12,4))
+            editor=ttk.Frame(panel);editor.pack()
+            initial=control.get('targets') or [{'id':1001,'xyz':[-1.4,2.8,.35]}]
+            ident=tk.StringVar(value=str(initial[0]['id']))
+            selector=ttk.Combobox(editor,textvariable=ident,width=7,state='readonly',
+                values=[str(t['id']) for t in control.get('targets',[]) ] or [str(1001+i) for i in range(10)])
+            selector.grid(row=1,column=0,padx=3)
+            entries=[]
+            for column,label in enumerate(('ID','X','Y','Z')):
+                ttk.Label(editor,text=label).grid(row=0,column=column)
+            for column,value in enumerate(initial[0]['xyz'],1):
+                variable=tk.StringVar(value=str(value));entries.append(variable)
+                ttk.Entry(editor,textvariable=variable,width=9).grid(row=1,column=column,padx=3)
+            def select_target(_event):
+                scene=control.get('targets') or [
+                    {'id':1001+i,'xyz':[-1.4+.3*i,2.8+.5*i,.35+.065*i]} for i in range(10)]
+                selected=next(t for t in scene if t['id']==int(ident.get()))
+                for variable,value in zip(entries,selected['xyz']):variable.set(str(value))
+            selector.bind('<<ComboboxSelected>>',select_target)
+            edit_status=tk.StringVar()
+            def apply_target():
+                try:
+                    scene=control.get('targets') or [
+                        {'id':1001+i,'xyz':[-1.4+.3*i,2.8+.5*i,.35+.065*i]} for i in range(10)]
+                    xyz=[float(v.get()) for v in entries]
+                    updated=[{'id':t['id'],'xyz':xyz if t['id']==int(ident.get()) else t['xyz']} for t in scene]
+                    # Validate before replacing the running scenario.
+                    devices.configure(control['scenario'],control['target_count'],updated,control.get('rdr_world',(0,0,0)))
+                    control['targets']=updated;write_json(control_file,control)
+                    edit_status.set('위치 적용: 소실 후 새 위치로 재검출합니다.')
+                except (ValueError,TypeError,KeyError) as error:
+                    edit_status.set(str(error))
+            ttk.Button(panel,text='표적 위치 적용',command=apply_target).pack(pady=6)
+            ttk.Label(panel,textvariable=edit_status,wraplength=410).pack()
             ttk.Button(panel, text='전체 종료', command=stop).pack(pady=10)
             panel.protocol('WM_DELETE_WINDOW', stop)
         started, last_poll, seen = time.monotonic(), 0, None
@@ -136,18 +213,39 @@ def main():
                     modified = control_file.stat().st_mtime_ns
                     if modified != seen:
                         updated = json.loads(control_file.read_text(encoding='utf-8-sig'))
-                        devices.configure(updated.get('scenario', 'normal'), updated.get('target_count', 10))
+                        devices.configure(updated.get('scenario', 'normal'), updated.get('target_count', 10),
+                            updated.get('targets'),updated.get('rdr_world',devices.rdr_world))
                         control, seen = updated, modified
                 except (OSError, ValueError) as error:
                     print(f'시나리오 설정 대기: {error}', flush=True)
+                if control.get('targets') is not None:
+                    try:
+                        telemetry=json.loads((args.runtime/'c2-state.json').read_text(encoding='utf-8'))
+                        if telemetry.get('timestamp_ms',0)<station_started_ms:
+                            raise ValueError('Telemetry belongs to an earlier ECS run')
+                        # ECS installation storage is (forward,left,up), whereas
+                        # dummy world inputs and GUI positions are (east,north,up).
+                        forward,left,up=telemetry['display_positions']['rdr']
+                        origin=(-left,forward,up)
+                        if tuple(devices.rdr_world)!=origin:
+                            devices.configure(control.get('scenario','normal'),control.get('target_count',10),
+                                control['targets'],origin)
+                            control['rdr_world']=list(origin)
+                            write_json(control_file,control)
+                            print(f'RDR world position synchronized from ECS: {origin}; reacquiring targets',flush=True)
+                    except (OSError,ValueError,KeyError,TypeError):
+                        pass  # A later telemetry snapshot supplies the installation position.
                 state = devices.snapshot()
                 state['runner_pid'] = os.getpid()
                 state['c2_pid'] = station.pid
                 state['ipc_suffix'] = ipc_suffix
+                state['fcs_mode']='real' if args.real_fcs else 'dummy'
+                state['fcs_peer']=fcs_peer
                 write_json(state_file, state)
                 if panel:
-                    status.set(f'시나리오: {state["scenario"]}\nRDR 연결={state["rdr_connected"]} / 모드={state["rdr_mode"]}\n'
+                    fcs_status=('FCS 실측 각도·정렬 상태는 GUI에서 확인합니다.' if args.real_fcs else
                         f'FCS 고각={state["fcs_elevation_deg"]:.1f}° / 방위각={state["fcs_azimuth_deg"]:.1f}°')
+                    status.set(f'시나리오: {state["scenario"]}\nRDR 연결={state["rdr_connected"]} / 모드={state["rdr_mode"]}\n'+fcs_status)
             if panel:
                 panel.update()
             time.sleep(.02)

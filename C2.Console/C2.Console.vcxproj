@@ -85,6 +85,8 @@
     <ClInclude Include="Headers\fcs_angles.hpp" />
     <ClInclude Include="Headers\installation_config.hpp" />
     <ClInclude Include="Headers\rdr_control.hpp" />
+    <ClInclude Include="Headers\rdr_coordinates.hpp" />
+    <ClInclude Include="Headers\rdr_live_diagnostics.hpp" />
   </ItemGroup>
   <ItemGroup />
   <ItemGroup>

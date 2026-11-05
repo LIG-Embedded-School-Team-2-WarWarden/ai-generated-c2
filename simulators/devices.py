@@ -7,15 +7,19 @@ import time
 
 
 class Devices:
-    def __init__(self, rdr_port=0, fcs_port=0):
+    def __init__(self, rdr_port=0, fcs_port=0, enable_fcs=True):
         self.rdr = self._socket(rdr_port)
-        self.fcs = self._socket(fcs_port)
+        self.fcs = self._socket(fcs_port) if enable_fcs else None
         self.rdr_port = self.rdr.getsockname()[1]
-        self.fcs_port = self.fcs.getsockname()[1]
+        self.fcs_port = self.fcs.getsockname()[1] if self.fcs else None
         self.lock = threading.RLock()
         self.done = threading.Event()
         self.scenario = 'normal'
         self.target_count = 10
+        self.targets = None
+        self.rdr_world = (0., 0., 0.)
+        self.target_reset_until = 0.
+        self.retired_ids = set()
         self.error = None
         self.connected = self.reporting = False
         self.mode = self.token = self.rdr_tx = self.rx = 0
@@ -24,7 +28,7 @@ class Devices:
         self.pending = None
         self.cache = {}
         self.excluded = set()
-        self.pan = 0.0
+        self.pan = 180.0  # Device north reference; DE03 carries 1800 at north.
         self.tilt = 12.3
         self.fcs_tx = 0
         self.elevation, self.azimuth = 12.3, 180.2
@@ -41,12 +45,41 @@ class Devices:
         sock.setblocking(False)
         return sock
 
-    def configure(self, scenario='normal', target_count=10):
+    def configure(self, scenario='normal', target_count=10, targets=None, rdr_world=(0,0,0)):
         if scenario not in ('normal', 'empty', 'rdr-offline', 'fcs-offline', 'fcs-fault'):
             raise ValueError('unknown scenario')
         if not 0 <= int(target_count) <= 10:
             raise ValueError('target_count must be 0..10')
+        def position(value):
+            if len(value)!=3 or any(isinstance(v,bool) for v in value):
+                raise ValueError('XYZ must contain three finite numbers')
+            xyz=tuple(float(v) for v in value)
+            if not all(math.isfinite(v) for v in xyz) or math.hypot(*xyz)>3.4028234e38:
+                raise ValueError('XYZ must fit finite float32 metres')
+            return xyz
+        origin=position(rdr_world)
+        scene=None
+        if targets is not None:
+            scene=[]
+            if not isinstance(targets,list) or len(targets)>10:
+                raise ValueError('targets must be a list with at most 10 entries')
+            ids=set()
+            for target in targets:
+                ident=target['id']
+                if isinstance(ident,bool) or not isinstance(ident,int) or not 1<=ident<=65535 or ident in ids:
+                    raise ValueError('target IDs must be unique integers in 1..65535')
+                ids.add(ident)
+                scene.append({'id':ident,'xyz':position(target['xyz'])})
         with self.lock:
+            old_ids={t['id'] for t in self.targets} if self.targets is not None else set(range(1001,1001+self.target_count))
+            new_ids={t['id'] for t in scene} if scene is not None else set(range(1001,1001+int(target_count)))
+            if self.connected and new_ids-old_ids:
+                raise ValueError('Restart the dummy to introduce new target IDs; existing IDs can be repositioned live')
+            if scene!=self.targets or origin!=self.rdr_world:
+                self.target_reset_until=time.monotonic()+.8
+                if self.connected:
+                    self.retired_ids.update(old_ids-new_ids)
+            self.targets,self.rdr_world=scene,origin
             self.scenario, self.target_count = scenario, int(target_count)
 
     def _packet(self, kind, rx=0, a=0, b=0, result=0):
@@ -145,8 +178,20 @@ class Devices:
     def _toward(value, target, step):
         return value + max(-step, min(step, target - value))
 
+    @staticmethod
+    def _sensor_xyz(east, north, up, pan, tilt):
+        """Express a fixed scene point in the moving sensor's right/up/front axes."""
+        heading = math.radians(pan - 180)
+        elevation = math.radians(tilt)
+        right = east * math.cos(heading) - north * math.sin(heading)
+        forward = east * math.sin(heading) + north * math.cos(heading)
+        return (-right,  # Match the physical lidar's mirrored wire X.
+                up * math.cos(elevation) - forward * math.sin(elevation),
+                up * math.sin(elevation) + forward * math.cos(elevation))
+
     def run(self):
         previous, report_at = time.monotonic(), 0
+        started = previous
         try:
             while not self.done.wait(.01):
                 now = time.monotonic()
@@ -155,7 +200,9 @@ class Devices:
                     self.elevation = self._toward(self.elevation, self.target_elevation, dt * 25)
                     self.azimuth = self._toward(self.azimuth, self.target_azimuth, dt * 25)
                     if self.mode == 2:
-                        self.pan = 35 * math.sin(now * .18)
+                        elapsed = now - started
+                        self.pan = 180 + 35 * math.sin(elapsed * .18)
+                        self.tilt = 12.3 + 8 * math.sin(elapsed * .23)
                     if self.connected and now - self.last_receive > 3.5:
                         self.connected, self.reporting, self.mode, self.pending = False, False, 0, None
                     if self.pending and now >= self.pending[0]:
@@ -166,6 +213,8 @@ class Devices:
                         self.cache[q[1]] = raw, response
                         self._send_rdr(response)
                     for sock, handler in ((self.rdr, self._rdr_request), (self.fcs, self._fcs_request)):
+                        if sock is None:
+                            continue
                         for _ in range(32):
                             try:
                                 raw, peer = sock.recvfrom(512)
@@ -174,30 +223,45 @@ class Devices:
                             handler(raw, peer, now)
                     if self.connected and self.reporting and self.mode == 2 and self.scenario != 'rdr-offline' and now >= report_at:
                         report_at = now + .2
-                        for index in range(self.target_count):
-                            ident = 1001 + index
+                        scene=self.targets if self.targets is not None else [
+                            {'id':1001+i,'xyz':(-1.4+.3*i,2.8+.5*i,.35+.065*i)} for i in range(self.target_count)]
+                        retired=self.retired_ids
+                        self.retired_ids=set()
+                        for target in scene+[{'id':ident,'xyz':(0,0,0)} for ident in retired]:
+                            ident = target['id']
                             if ident in self.excluded:
                                 continue
-                            detected = self.scenario != 'empty'
-                            x, y, z = -1400 + 300 * index, 350 + 65 * index, 2800 + 500 * index
+                            detected = self.scenario != 'empty' and ident not in retired and now>=self.target_reset_until
+                            pan, tilt = round(self.pan * 10), round(self.tilt * 10)
+                            # Fixed world scene (east/north/up); only the sensor
+                            # coordinates change while the observation pose moves.
+                            xyz=target['xyz']
+                            # Custom inputs are world metres. Default scene keeps
+                            # the existing RDR-relative fixture convention.
+                            relative=tuple(v-o for v,o in zip(xyz,self.rdr_world)) if self.targets is not None else xyz
+                            x, y, z = self._sensor_xyz(*relative, pan / 10, tilt / 10)
                             self.rdr_tx = (self.rdr_tx + 1) & 65535
-                            self.rdr.sendto(struct.pack('!4H3fhhH6x', 0xDE03, self.rdr_tx, self.rx, ident,
-                                x / 1000 if detected else 0, y / 1000 if detected else 0, z / 1000 if detected else 0,
-                                round(self.tilt * 10) if detected else -32768,
-                                round(self.pan * 10) if detected else -32768, int(detected)), self.rdr_peer)
+                            self.rdr.sendto(struct.pack('!4H3fhhHH4x', 0xDE03, self.rdr_tx, self.rx, ident,
+                                x if detected else 0, y if detected else 0, z if detected else 0,
+                                tilt if detected else -32768,
+                                pan if detected else -32768,
+                                int(detected), 1 if detected else 0), self.rdr_peer)
         except BaseException as error:
             self.error = error
             self.done.set()
 
     def snapshot(self):
         with self.lock:
-            return {'scenario': self.scenario, 'target_count': self.target_count,
+            return {'scenario': self.scenario, 'target_count': len(self.targets) if self.targets is not None else self.target_count,
+                    'targets': self.targets, 'rdr_world': self.rdr_world,
                     'rdr_connected': self.connected, 'rdr_mode': self.mode, 'reporting': self.reporting,
-                    'rdr_pan_deg': round(self.pan, 1), 'fcs_elevation_deg': round(self.elevation, 1),
-                    'fcs_azimuth_deg': round(self.azimuth, 1), 'received': dict(self.received)}
+                    'rdr_pan_deg': round(self.pan, 1), 'mock_fcs_enabled': self.fcs is not None,
+                    'fcs_elevation_deg': round(self.elevation, 1) if self.fcs else None,
+                    'fcs_azimuth_deg': round(self.azimuth, 1) if self.fcs else None, 'received': dict(self.received)}
 
     def close(self):
         self.done.set()
         self.thread.join(2)
         self.rdr.close()
-        self.fcs.close()
+        if self.fcs:
+            self.fcs.close()

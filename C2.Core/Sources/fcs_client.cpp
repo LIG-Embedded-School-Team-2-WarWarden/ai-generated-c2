@@ -10,12 +10,6 @@ Client::Client(ClientConfig config)
     if (config_.peer.address.empty() || config_.peer.port == 0 ||
         config_.response_timeout.count() <= 0 || config_.missed_status_limit == 0)
         throw std::invalid_argument("invalid FCS client configuration");
-    const auto valid_range = [](const auto& low, const auto& high) {
-        return low.has_value() == high.has_value() && (!low || *low <= *high);
-    };
-    if (!valid_range(config_.minimum_elevation, config_.maximum_elevation) ||
-        !valid_range(config_.minimum_azimuth, config_.maximum_azimuth))
-        throw std::invalid_argument("invalid FCS angle limits");
 }
 Client::~Client() { stop(); }
 void Client::start() {
@@ -98,11 +92,6 @@ void Client::receive(std::vector<std::byte> bytes, const Endpoint& source) {
 std::optional<Packet> Client::connect() { return exchange(Packet{MessageId::connect}); }
 std::optional<Packet> Client::query() { return exchange(Packet{MessageId::status}); }
 std::optional<Packet> Client::point(double elevation, double azimuth) {
-    if (!config_.minimum_elevation || !config_.minimum_azimuth)
-        throw std::logic_error("configure actual angle limits before point commands");
-    if (elevation < *config_.minimum_elevation || elevation > *config_.maximum_elevation ||
-        azimuth < *config_.minimum_azimuth || azimuth > *config_.maximum_azimuth)
-        throw std::invalid_argument("requested angle outside configured limits");
     Packet request{MessageId::point};
     request.elevation = angle_to_wire(elevation); request.azimuth = angle_to_wire(azimuth);
     return exchange(request);

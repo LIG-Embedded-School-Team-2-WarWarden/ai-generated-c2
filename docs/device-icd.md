@@ -4,10 +4,17 @@ RDR: ED01 연결, ED02 상태, ED03 보고 허용, ED04 ID 제외/재개, ED06 �
 프로그램 실행 시 ED01을 자동 전송합니다. 연결 후 ED02를 1초마다 보내며 연결 만료 시 재연결합니다.
 최초 연결과 재연결 모두 ED03 보고 허용·ED06 감시 시작은 명시적 명령을 기다립니다.
 응답은 대응 DE ID이며 제어는 24바이트, DE03은 32바이트 Big Endian입니다.
-nonce·요청 순번·응답 ID·peer를 검사합니다. DE03 좌표는 Big Endian IEEE 754 float32, 미터 단위로 읽습니다. 유한값과 패딩 6바이트를 검사합니다.
+nonce·요청 순번·응답 ID·peer를 검사합니다. DE03 좌표는 Big Endian IEEE 754 float32, 미터 단위로 읽습니다. 유한값, Detected/TrackState 조합과 예약28–31바이트를 검사합니다.
 팬/틸트 상태는 signed int16, 0.1도 단위이며 -32768은 미상입니다. 도 단위 변환은 /10.0입니다.
 RDR 각도는 사용자 확인에 따라 모든 응답에서 0.1도 규격을 적용합니다. DE03 관측 각도는 표적 방향각이 아닙니다.
-DE03은 Base(right,up,forward) 좌표입니다.
+DE03은 원본 센서 XYZ이며 실장비 X는 좌우 반전되어 있습니다. ECS는 `right=-raw_x`, `up=raw_y`, `forward=raw_z`로 정규화한 뒤 월드 좌표로 변환합니다. 관측 TILT@20/PAN@22는 signed int16, Detected@24/TrackState@26은 uint16입니다.
+LOST=0/Detected0은 XYZ0·관측 자세 미상, OBSERVED=1/Detected1은 관측 좌표, PREDICTED=2/Detected0은 같은 ID의 유효한 예측 좌표입니다.
+PREDICTED도 원본 XYZ·관측 자세를 보존합니다. 예측 기한은 송신측 마지막 관측/점군 지지 후 최대 1.5초이며 예측으로 연장되지 않습니다.
+ECS의 마지막 DE03 수신 후 3초 무효화는 별도 통신 타임아웃입니다. 관측 시각이 없어 수신 시각만으로 송신측 예측 경과 시간을 확인하지 않습니다.
+북쪽에서 PAN=1800, 오른쪽 회전이 양수이고 TILT는 수평0°·위쪽 양수입니다. 표적 관측 자세로 원본 XYZ를 회전해 GUI 동쪽/북쪽/위쪽 좌표로 전달합니다.
+장착 회전은 단위행렬·장착 이동량은 0인 기준 가정이며, 실측 장착 기하와 좌표 정확도 검증을 대체하지 않습니다.
+확인된 [Confluence ICD v8](https://ligproject2team.atlassian.net/wiki/spaces/MFS/pages/37355617/RDR-ECS+ICD)에는 구형 26–31바이트 패딩·`BASE_PAN_APPROX`·PAN 영점 2000tick 설명이 남아 있습니다. 현재 수신 계약은 사용자 확정안을 우선하며 송신 배포본 일치 여부는 별도로 확인해야 합니다.
+전체 DE03 오프셋은 [RDR 연결](rdr-edde24.md), 기존 GUI 공유 프레임/명령 파이프 v3는 [외부 운영 화면 IPC](operator-ipc.md)를 참고하세요.
 같은 요청을 재전송할 때는 최초 TxSeq와 24바이트 전체를 유지합니다.
 ED03은 직접 ACK 없이 후속 DE02로 보고 상태를 확인합니다.
 
@@ -21,4 +28,4 @@ FE02의 알 수 없는 각도 값 -32768은 그대로 유지합니다.
 
 독립 FCS firmware fixture와 RDR board fixture는 C2.Tests/Sources에 있습니다.
 프로토콜 구현과 다른 장비 측 fixture로 바이트·상태 전이·시간 초과를 비교합니다.
-실제 장비의 한계·주소·보정은 configs를 확인합니다.
+장비 주소는 configs를 확인합니다. ECS는 자산별 팬·틸트 구동 한계를 검사하지 않고 장비의 승인·거부 응답을 반영합니다.

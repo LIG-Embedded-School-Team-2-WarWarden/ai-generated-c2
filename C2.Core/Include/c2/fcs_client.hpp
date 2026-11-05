@@ -14,9 +14,6 @@ struct ClientConfig {
     UdpConfig local;
     std::chrono::milliseconds response_timeout{1000};
     std::uint32_t missed_status_limit{3};
-    // Mechanical limits must be supplied from the actual installation.
-    std::optional<std::int16_t> minimum_elevation, maximum_elevation;
-    std::optional<std::int16_t> minimum_azimuth, maximum_azimuth;
 };
 struct Status {
     std::uint16_t flags{};
@@ -41,7 +38,7 @@ public:
     // No automatic control-command retransmission. nullopt means outcome unknown.
     [[nodiscard]] std::optional<Packet> connect();
     [[nodiscard]] std::optional<Packet> query();
-    // Public angles and installation limits are in degrees.
+    // Public angles are in degrees; only the wire representation is validated.
     [[nodiscard]] std::optional<Packet> point(double elevation, double azimuth);
     [[nodiscard]] std::optional<Packet> laser(bool on);
     [[nodiscard]] std::optional<Packet> demo();

@@ -7,7 +7,8 @@
 #include <type_traits>
 #include <vector>
 
-// c2-GUI v3 @ 94bca8c5c477e4cf1bb15b93c288a5c450603910 (PRs #5/#6).
+// GUI frame v3 remains compatible with the unmodified external GUI.
+// The independent command/response pipe remains v3.
 // These are domain/ABI structs. Wire bytes are written field by field in the codec;
 // no memcpy/reinterpret_cast of a struct is used for serialization.
 namespace c2::ipc {

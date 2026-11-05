@@ -1,6 +1,7 @@
 #include "c2/fcs_client.hpp"
 #include "c2/rdr_client.hpp"
 #include "rdr_control.hpp"
+#include "rdr_live_diagnostics.hpp"
 #include "transport.hpp"
 #include "assignment_health.hpp"
 #include "fcs_angles.hpp"
@@ -50,16 +51,14 @@ static uint64_t get(std::span<const std::byte> bytes, size_t at, unsigned size) 
 static int signed16(std::span<const std::byte> bytes, size_t at) {
     auto value = int(get(bytes, at, 2)); return value >= 32768 ? value - 65536 : value;
 }
-struct Target { uint32_t id; double x, y, z; };
+struct Target { uint32_t id; double east, north, up; };
 struct RdrState {
     bool connected{}, streaming{}, scanning{};
-    double pan{}, tilt{};
     std::vector<Target> targets;
     Clock::time_point received{}, frame_received{};
     uint32_t frame{};
     uint64_t generation{};
 };
-static float display_angle(double relative) { return float(std::round(std::clamp(135-relative, 0., 270.)*10)/10); }
 static uint16_t parse_port(const std::string& value, bool automatic = false) {
     unsigned port{};
     const auto [end, error] = std::from_chars(value.data(), value.data()+value.size(), port);
@@ -87,9 +86,26 @@ public:
     std::optional<std::string> next() {std::lock_guard lock(mutex);if(lines.empty())return {};auto line=lines.front();lines.pop_front();return line;}
     bool ended() {std::lock_guard lock(mutex);return closed&&lines.empty();}
 };
-static nlohmann::json rdr_json(const c2::rdr::State& state) {
+static nlohmann::json rdr_json(const c2::rdr::State& state, c2::rdr::BasePoint origin,
+                               c2::rdr::WorldTargetStore& world_targets) {
     nlohmann::json targets=nlohmann::json::array();
-    for(const auto& [id,t]:state.targets)targets.push_back({{"id",id},{"x",t.x},{"y",t.y},{"z",t.z},{"status",t.status}});
+    const auto corrected=world_targets.update(state,origin);
+    const auto displayed=c2::rdr::correct_targets(state,origin);
+    for(const auto& point:corrected) {
+        const auto id=point.id;const auto& t=state.targets.at(id);
+        nlohmann::json row={{"id",id},{"raw_x",t.x},{"raw_y",t.y},{"raw_z",t.z},
+        {"observation_pan",t.pan},{"observation_tilt",t.tilt},{"detected",t.detected},
+        {"track_state",t.track_state},{"status",t.status},{"world_valid",point.valid},
+        {"world_xyz",nullptr},{"gui_xyz",nullptr}};
+        if(point.valid) {
+            row["world_xyz"]={point.world.east,point.world.north,point.world.up};
+        }
+        const auto live=std::find_if(displayed.begin(),displayed.end(),
+            [id](const auto& value){return value.id==id;});
+        if(live!=displayed.end() && live->valid)
+            row["gui_xyz"]={float(live->world.east),float(live->world.north),float(live->world.up)};
+        targets.push_back(std::move(row));
+    }
     return {{"connected",state.connected},{"mode",state.mode},{"reporting",state.reporting},{"result",state.last_result},{"targets",targets}};
 }
 
@@ -100,8 +116,6 @@ int main(int argc, char** argv) {
         fcs::ClientConfig config;
         config.peer = {"192.168.0.103", 2000}; config.local = {"192.168.0.102", 2000};
         config.response_timeout = std::chrono::milliseconds(200);
-        config.minimum_elevation = 0; config.maximum_elevation = 60;
-        config.minimum_azimuth = 120; config.maximum_azimuth = 240;
         std::filesystem::path stop_file, status_file, installation_file;
         InstallationConfig installation;
         auto laser_deadline = Clock::time_point{};
@@ -114,7 +128,7 @@ int main(int argc, char** argv) {
             auto next = [&]() -> std::string { if (++i>=argc) throw std::invalid_argument("missing argument"); return argv[i]; };
             if (option == "--help") {
                 std::cout << "C2 binary ICD server --config FILE [--ipc] [--headless --stop-file FILE] [--print-network]\n"
-                    "RDR: rdr connect|status|targets|report on|off|start|stop|exclude ID|resume ID\n"
+                    "RDR: rdr connect|status|targets|live on|off|report on|off|start|stop|exclude ID|resume ID\n"
                     "FCS: fcs connect|status|point ELEVATION AZIMUTH|laser on|off; quit\n";
                 return 0;
             }
@@ -141,16 +155,6 @@ int main(int argc, char** argv) {
                 config.local.bind_address=fcs_config.at("local").at("ip"); config.local.listen_port=parse_port(fcs_config.at("local").at("port").dump(),true);
                 config.peer.address=fcs_config.at("peer").at("ip"); config.peer.port=parse_port(fcs_config.at("peer").at("port").dump());
                 rdr_only=!fcs_config.value("enabled",true);
-                const auto& limits=fcs_config.at("limits");
-                auto limit=[&](const char* key) {
-                    const auto& value=limits.at(key);
-                    if(!value.is_number_integer())throw std::invalid_argument("FCS limits must be integer degrees");
-                    const auto number=value.get<int64_t>();
-                    if(number < -32767 || number > 32767)throw std::invalid_argument("FCS limit outside signed angle range");
-                    return int16_t(number);
-                };
-                config.minimum_elevation=limit("elevation_min");config.maximum_elevation=limit("elevation_max");
-                config.minimum_azimuth=limit("azimuth_min");config.maximum_azimuth=limit("azimuth_max");
             }
             else if (option == "--rdr-port" || option == "--rdr-real-port") rdr_port=parse_port(next());
             else if (option == "--rdr-local-port" || option == "--rdr-real-local-port") rdr_local_port=parse_port(next());
@@ -207,6 +211,7 @@ int main(int argc, char** argv) {
                   << "Assign sends EF03; Fire sends EF05 built-in demo; Cancel sends EF04 OFF.\n"
                   << "FCS and RDR connect automatically; RDR report/start require commands.\n"
                   << "RDR controls: rdr connect / rdr report on / rdr start / rdr stop\n"
+                  << "Read-only world XYZ monitor: rdr live on / rdr live off (200 ms)\n"
                   << "Ctrl+C closes this station.\n" << std::flush;
         std::ofstream events;
         if (!status_file.empty()) events.open(status_file.parent_path()/"events.log",std::ios::app);
@@ -222,17 +227,14 @@ int main(int argc, char** argv) {
             log(std::string("RDR mode=real24 ED/DE; FCS=")+(client?"active":"inactive")+
                 "; automatic Connect/reconnect; explicit Report ON and Start required");
         }
-        auto observation_snapshot=[&]() {
+        auto observation_snapshot=[&](const c2::rdr::State& state,
+                                     const std::vector<c2::rdr::CorrectedTarget>& targets) {
             RdrState out;
-            const auto state=real_rdr->snapshot();
             out.generation=state.generation;
-            out.connected=state.connected;out.streaming=state.reporting;out.scanning=real_control->operating();
-            out.pan=state.pan==-32768?0:state.pan/10.;
-            out.tilt=state.tilt==-32768?0:state.tilt/10.;
-            // DE03 is already BASE_PAN_APPROX: right/up/forward. The existing
-            // bench solver uses forward/left/up, so change axes exactly once.
-            for (const auto& [id,target] : state.targets)
-                if (out.scanning && target.status==0) out.targets.push_back({id,target.z,-target.x,target.y});
+            out.connected=state.connected;out.streaming=state.reporting;out.scanning=real_control->operating(state);
+            for (const auto& target : targets)
+                if (out.scanning && target.valid)
+                    out.targets.push_back({target.id,target.world.east,target.world.north,target.world.up});
             return out;
         };
         auto command_result=[&](const char* name,const std::optional<fcs::Packet>& reply) {
@@ -262,6 +264,9 @@ int main(int argc, char** argv) {
         Clock::time_point next_poll{}, next_log{}, move_deadline{}, next_installation_check{}, next_rdr_retry{};
         bool installation_missing{};
         ConsoleInput console(headless);
+        c2::rdr::WorldTargetStore world_targets;
+        bool rdr_live{};
+        Clock::time_point next_rdr_live{};
         std::cout << nlohmann::json{{"ready",true},{"runtime","C++"},{"network",network},{"rdr_protocol","edde24"},{"fcs_protocol","effe"}}.dump()<<std::endl;
         while (!quitting && (stop_file.empty() || !std::filesystem::exists(stop_file))) {
             if(auto line=console.next()) {
@@ -273,7 +278,7 @@ int main(int argc, char** argv) {
                     if(device=="quit" || device=="exit")expected=1;
                     else if(device=="rdr") {
                         if(command=="connect"||command=="status"||command=="targets"||command=="start"||command=="stop")expected=2;
-                        else if(command=="report"||command=="exclude"||command=="resume")expected=3;
+                        else if(command=="report"||command=="exclude"||command=="resume"||command=="live")expected=3;
                     } else if(device=="fcs") {
                         if(command=="connect"||command=="status")expected=2;
                         else if(command=="point")expected=4;
@@ -281,14 +286,22 @@ int main(int argc, char** argv) {
                     }
                     if(!expected || words.size()!=expected)throw std::invalid_argument("invalid command or argument count");
                     if(device=="quit" || device=="exit")break;
-                    if(device=="rdr") {
+                    if(device=="rdr" && command=="live") {
+                        input>>arg;
+                        if(arg!="on" && arg!="off")throw std::invalid_argument("live on|off");
+                        rdr_live=arg=="on";
+                        next_rdr_live={};
+                        std::cout<<nlohmann::json{{"rdr_live",rdr_live},{"interval_ms",200}}.dump()<<std::endl;
+                    } else if(device=="rdr") {
                         if(command=="connect")real_rdr->connect();
                         else if(command=="start")real_rdr->command(0xED06,1);
                         else if(command=="stop") {real_control->cancel_start();real_rdr->command(0xED06,0);}
                         else if(command=="report") {input>>arg;if(arg!="on"&&arg!="off")throw std::invalid_argument("report on|off");real_rdr->command(0xED03,arg=="on");}
                         else if(command=="exclude"||command=="resume") {input>>arg;auto id=parse_port(arg);real_rdr->command(0xED04,id,command=="resume");}
                         else if(command!="status"&&command!="targets")throw std::invalid_argument("unknown RDR command");
-                        auto state=rdr_json(real_rdr->snapshot());std::cout<<(command=="targets"?state["targets"]:state).dump()<<std::endl;
+                        auto state=rdr_json(real_rdr->snapshot(),
+                            {-installation.rdr_position[1],installation.rdr_position[0],installation.rdr_position[2]},world_targets);
+                        std::cout<<(command=="targets"?state["targets"]:state).dump()<<std::endl;
                     } else if(device=="fcs" && client) {
                         std::optional<fcs::Packet> response;
                         if(command=="connect")response=client->connect();
@@ -358,7 +371,16 @@ int main(int argc, char** argv) {
                 next_poll = Clock::now()+std::chrono::seconds(1);
             }
             auto state = client?client->snapshot():fcs::Snapshot{};
-            auto observation = observation_snapshot();
+            const auto rdr_state=real_rdr->snapshot();
+            // Installation storage is (forward,left,up); corrected coordinates
+            // and GUI XYZ are (east,north,up). Rotate raw DE03 coordinates once.
+            const c2::rdr::BasePoint rdr_origin{-installation.rdr_position[1],installation.rdr_position[0],installation.rdr_position[2]};
+            if (rdr_live && Clock::now()>=next_rdr_live) {
+                std::cout<<c2::rdr::live_diagnostics(rdr_state,rdr_origin,unix_ms()).dump()<<std::endl;
+                next_rdr_live=Clock::now()+std::chrono::milliseconds(200);
+            }
+            auto corrected_targets=world_targets.update(rdr_state,rdr_origin);
+            auto observation = observation_snapshot(rdr_state,corrected_targets);
             bool current = state.connected && state.status &&
                 Clock::now()-state.status_received_at < std::chrono::seconds(2);
             uint16_t flags = current ? state.status->flags : 0;
@@ -366,9 +388,9 @@ int main(int argc, char** argv) {
             auto assigned_now = std::find_if(observation.targets.begin(), observation.targets.end(),
                 [&](const Target& t) { return t.id == target_id; });
             bool target_current = target_id && assigned_now != observation.targets.end() &&
-                std::abs(assigned_now->x-assigned_target.x)<.01 &&
-                std::abs(assigned_now->y-assigned_target.y)<.01 &&
-                std::abs(assigned_now->z-assigned_target.z)<.01;
+                std::abs(assigned_now->east-assigned_target.east)<.01 &&
+                std::abs(assigned_now->north-assigned_target.north)<.01 &&
+                std::abs(assigned_now->up-assigned_target.up)<.01;
             bool aligned=current && std::abs(state.status->azimuth-commanded_pan)<=1 &&
                 std::abs(state.status->elevation-commanded_tilt)<=1;
             if (real_rdr && target_id && observation.generation!=assigned_rdr_generation)
@@ -414,6 +436,11 @@ int main(int argc, char** argv) {
                             if (position!=updated) {
                                 invalidate_installation_alignment();
                                 position=updated;
+                                if (rdr_position) {
+                                    corrected_targets=world_targets.update(rdr_state,
+                                        {-position[1],position[0],position[2]});
+                                    observation=observation_snapshot(rdr_state,corrected_targets);
+                                }
                             }
                             log(std::string("GUI position updated: ")+(rdr_position?"RDR":"FCS")+
                                 " XYZ="+std::to_string(request.position_x)+","+
@@ -438,15 +465,16 @@ int main(int argc, char** argv) {
                         else if (found==observation.targets.end()) result=gui::Result::target_pending;
                         else if (target_id && (target_id!=request.target_id || assignment!=3 || demo_requested)) result=gui::Result::already_assigned;
                         else {
-                            // Observations are RDR-relative (forward,left,up).
-                            // Translate through the common installation frame to FCS-relative coordinates.
-                            const double forward=found->x+installation.rdr_position[0]-installation.eff_position[0];
-                            const double left=found->y+installation.rdr_position[1]-installation.eff_position[1];
-                            const double up=found->z+installation.rdr_position[2]-installation.eff_position[2];
-                            const double horizontal=std::hypot(forward,left);
-                            if (horizontal<.001) throw std::invalid_argument("undefined target bearing");
-                            commanded_pan = std::round((180+std::atan2(left,forward)*180/std::numbers::pi)*10)/10;
-                            commanded_tilt = std::round(std::atan2(up,horizontal)*180/std::numbers::pi*10)/10;
+                            // Use the same corrected installation point published to the GUI.
+                            const double east=found->east+installation.eff_position[1];
+                            const double north=found->north-installation.eff_position[0];
+                            const double up=found->up-installation.eff_position[2];
+                            const auto angles=fcs_point_angles(east,north,up);
+                            commanded_pan=angles.azimuth;commanded_tilt=angles.elevation;
+                            log("FCS point target="+std::to_string(request.target_id)+
+                                " corrected_xyz="+std::to_string(found->east)+","+std::to_string(found->north)+","+std::to_string(found->up)+
+                                " relative_xyz="+std::to_string(east)+","+std::to_string(north)+","+std::to_string(up)+
+                                " pan="+std::to_string(commanded_pan)+" tilt="+std::to_string(commanded_tilt));
                             auto reply=client->point(commanded_tilt,commanded_pan);
                             result=command_result("EF03",reply);
                             if(result==gui::Result::success) { target_id=request.target_id; assigned_target=*found; assigned_rdr_generation=observation.generation; health.start(); fire=0; demo_requested=demo_seen=false; move_deadline=Clock::now()+std::chrono::seconds(60); next_poll={}; }
@@ -497,40 +525,26 @@ int main(int argc, char** argv) {
             auto& p=frame.payload; p.rdr_count=p.fcs_count=p.selected_rdr=p.selected_fcs=1;
             p.rdr.id=p.fcs.id=1; p.rdr.connected=p.rdr.enabled=observation.connected;
             // Use the same installation positions as the FCS assignment calculation.
-            // Reported XYZ is PAN-fixed; do not apply the raw-sensor rotation again.
             p.rdr.position_x=float(-installation.rdr_position[1]);
             p.rdr.position_y=float(installation.rdr_position[0]);
             p.rdr.position_z=float(installation.rdr_position[2]);
             p.fcs.position_x=float(-installation.eff_position[1]);
             p.fcs.position_y=float(installation.eff_position[0]);
             p.fcs.position_z=float(installation.eff_position[2]);
-            p.rdr.operating=observation.scanning; p.rdr.azimuth=display_angle(observation.pan); p.rdr.elevation=float(observation.tilt);
             p.fcs.connected=state.connected; p.fcs.enabled=ready; p.fcs.operating=ready;
             p.fcs.laser_on=current && (flags&4);
             p.fcs.azimuth=current && state.status->azimuth!=-32768 ?
                 fcs_motor_to_gui_azimuth(state.status->azimuth) : 135;
             p.fcs.elevation=current && state.status->elevation!=-32768 ? float(state.status->elevation) : 0;
-            for (const auto& t:observation.targets) {
-                if(p.target_count==gui::target_capacity) break;
-                auto& out=p.targets[p.target_count++]; out.id=t.id; out.rdr_id=1; out.valid=1;
-                out.azimuth=display_angle(std::atan2(t.y,t.x)*180/std::numbers::pi);
-                out.elevation=float(std::round(std::atan2(t.z,std::hypot(t.x,t.y))*180/std::numbers::pi*10)/10);
-                out.distance=float(std::sqrt(t.x*t.x+t.y*t.y+t.z*t.z));
-                out.x=float(-(t.y+installation.rdr_position[1]));
-                out.y=float(t.x+installation.rdr_position[0]);
-                out.z=float(t.z+installation.rdr_position[2]);
-            }
             if (real_control) {
-                real_control->populate(p);
-                unsigned visible=0;
-                for(unsigned i=0;i<p.target_count;++i) if(p.targets[i].valid && p.targets[i].status==0) {
-                    auto target=p.targets[i];std::swap(target.y,target.z);
-                    target.x+=p.rdr.position_x;target.y+=p.rdr.position_y;target.z+=p.rdr.position_z;
-                    p.targets[visible++]=target;
-                }
+                // Display the latest observation for each ID, without the held-position cache.
+                // Read installation positions here so same-frame position edits are reflected.
+                const auto display_targets=c2::rdr::correct_targets(rdr_state,
+                    {-installation.rdr_position[1],installation.rdr_position[0],installation.rdr_position[2]});
+                real_control->populate(p,rdr_state,display_targets);
+                // Legacy GUI does not recognize unknown-angle sentinels.
                 if(p.rdr.azimuth==-32768)p.rdr.azimuth=135;
                 if(p.rdr.elevation==-32768)p.rdr.elevation=0;
-                p.target_count=visible; for(unsigned i=visible;i<gui::target_capacity;++i)p.targets[i]={};
                 if (!client) { p.fcs={};p.fcs_count=p.selected_fcs=0; }
             }
             if (!c2_ipc_publish(ipc,&frame)) throw std::runtime_error("GUI frame publish failed");
@@ -545,7 +559,7 @@ int main(int argc, char** argv) {
                         << ",\"connected\":" << (observation.connected?"true":"false")
                         << ",\"mode\":" << real_state.mode << ",\"reporting\":" << (observation.streaming?"true":"false")
                         << ",\"result\":" << real_state.last_result
-                        << ",\"frame\":\"" << (real_rdr?"BASE_PAN_APPROX":"bench") << "\""
+                        << ",\"frame\":\"" << (real_rdr?"SENSOR_RAW":"bench") << "\""
                         << ",\"fcs_connected\":" << (state.connected?"true":"false")
                         << ",\"fcs_ready\":" << (ready?"true":"false") << ",\"flags\":" << flags
                         << ",\"rdr_connected\":" << (observation.connected?"true":"false")

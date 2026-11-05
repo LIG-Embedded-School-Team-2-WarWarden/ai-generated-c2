@@ -39,10 +39,26 @@ rdr stop
 연결은 자동입니다. 최초 연결·재연결 뒤 보고 허용과 감시 시작은 명시적으로 요청합니다.
 GUI 구동은 ED03 보고 허용 후 DE02 확인을 거쳐 ED06 시작을 보냅니다.
 정지 시 측정값을 무효화하며 재연결만으로 감시를 재개하지 않습니다.
-제어는 24바이트, DE03은 32바이트 Big Endian이며 좌표는 Base(right,up,forward), float32 미터입니다.
-DE03: ID@0, TxSeq@2, RxSeq@4, TargetID@6, X@8, Y@12, Z@16, 고각@20, 방위각@22, Detected@24, 영 패딩@26~31.
-구형 24바이트 DE03, 길이 오류, 비유한 좌표, 잘못된 Detected·패딩은 거부합니다.
-기준: [RDR-ECS ICD 버전 6](https://ligproject2team.atlassian.net/wiki/spaces/MFS/pages/37355617/RDR-ECS+ICD).
-문서에 남은 0.01도 표기는 사용자 확인으로 모든 RDR 응답에 0.1도를 적용합니다.
+제어는 24바이트, DE03은 32바이트 Big Endian입니다. 원본 센서 XYZ·관측 자세·TrackState를 받으며 실장비 X의 좌우 반전은 ECS에서 `right=-raw_x`로 보정합니다. Y는 위쪽, Z는 앞쪽입니다.
+
+| Offset | 필드 | 형식 |
+|---|---|---|
+| 0 / 2 / 4 / 6 | ID=0xDE03 / TxSeq / RxSeq / TargetID | uint16 |
+| 8 / 12 / 16 | 원본 X / Y / Z | IEEE-754 float32, m |
+| 20 / 22 | 관측 TILT / PAN | int16, 0.1° |
+| 24 / 26 | Detected / TrackState | uint16 |
+| 28–31 | 예약 | 모두0 |
+
+TrackState=0 LOST는 Detected0·XYZ0·관측 자세 미상,1 OBSERVED는 Detected1,2 PREDICTED는 Detected0·유효한 예측 XYZ입니다.
+ECS는 PREDICTED의 같은 ID·좌표·관측 자세를 보존합니다. 잘못된 상태 조합, LOST의 잔여 좌표/자세, 비유한 XYZ, 예약값과 길이 오류를 거부합니다.
+송신측은 마지막 관측 또는 점군 지지 후 최대 1.5초까지만 예측을 유효하게 보내며 예측 자체로 기한을 연장하지 않습니다.
+패킷에 관측 시각은 없습니다. ECS의 마지막 DE03 수신 후 3초 무효화는 별도 통신 타임아웃이며 송신측 예측 기한을 검증하는 시계가 아닙니다.
+
+관측 PAN=1800은 북쪽, 오른쪽 회전이 양수입니다. TILT는 수평0°·위쪽 양수입니다.
+ECS가 해당 표적의 관측 자세로 XYZ를 한 번 회전해 동쪽/북쪽/위쪽 좌표와 방향각을 계산합니다. 현재 모터 상태를 표적의 관측 자세로 대체하지 않습니다.
+장착 회전 단위행렬·장착 이동량 0을 가정하며 실장비 장착 기하·좌표 정확도 검증은 별도입니다.
+
+[RDR-ECS ICD](https://ligproject2team.atlassian.net/wiki/spaces/MFS/pages/37355617/RDR-ECS+ICD)의 확인된 v8에는 아직 26–31바이트 패딩, `BASE_PAN_APPROX`, PAN 영점 2000tick 설명이 남아 있습니다.
+현재 구현은 위 사용자 확정 계약을 우선합니다. 같은 32바이트라도 구형 보정 XYZ와 원본 XYZ의 의미를 자동 구분할 수 없으므로 송신측 적용 버전과 실제 패킷을 대조해야 합니다.
 팬·틸트는 signed int16, 0.1도 단위이고 -32768은 미상입니다.
 현재 보드에 고각 설정 명령은 없습니다. [장비 ICD](device-icd.md)를 참고하세요.

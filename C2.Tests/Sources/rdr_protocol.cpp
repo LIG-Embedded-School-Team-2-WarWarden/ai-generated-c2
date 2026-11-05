@@ -13,8 +13,36 @@ struct Harness {
     void connect(){assert(client.take().empty());client.connect(now);pump();tick(now);assert(client.state().connected);assert(board.mode==Rdr::IDLE&&starts==0);}
     void start(){assert(client.command(0xED06,1,0,now)==1);pump();assert(client.state().last_result==1);assert(board.mode==Rdr::STARTING);board.complete(true,true);assert(client.state().mode==2&&client.state().last_result==0);}
     void reporting(){assert(client.command(0xED03,1,0,now)==1);pump();tick(now+1.1);assert(client.state().reporting&&client.state().last_result==0);}
-    void observe(uint16_t id,bool detected=true){std::array<uint8_t,32> p{};Rdr::put(p,24,detected?1:0);auto coord=[&](unsigned n,float v){auto bits=std::bit_cast<uint32_t>(v);Rdr::put(p,n,uint16_t(bits>>16));Rdr::put(p,n+2,uint16_t(bits));};coord(8,-.463f);coord(12,-.106f);coord(16,2.232f);board.observation(p,id);}
+    void observe(uint16_t id,bool detected=true){
+        std::array<uint8_t,32> p{};
+        Rdr::put(p,24,detected?1:0);Rdr::put(p,26,detected?1:0);
+        Rdr::put(p,20,detected?uint16_t(-123):0x8000);Rdr::put(p,22,detected?1800:0x8000);
+        auto coord=[&](unsigned n,float v){auto bits=std::bit_cast<uint32_t>(v);Rdr::put(p,n,uint16_t(bits>>16));Rdr::put(p,n+2,uint16_t(bits));};
+        if(detected){coord(8,-.463f);coord(12,-.106f);coord(16,2.232f);}
+        board.observation(p,id);
+    }
+    void predict(uint16_t id){auto p=last_observation;Rdr::put(p,24,0);Rdr::put(p,26,2);board.observation(p,id);}
 };
+static void prediction_state_and_invalidation(){
+    Harness h;h.connect();h.reporting();h.start();h.observe(7);
+    auto& target=h.client.state().targets.at(7);
+    assert(target.pan==1800&&target.tilt==-123&&target.detected==1&&target.track_state==1);
+    h.now+=1;h.predict(7);
+    assert(target.status==0&&target.detected==0&&target.track_state==2);
+    assert(target.pan==1800&&target.tilt==-123&&std::abs(target.x+.463)<1e-6);
+    const auto receipt=target.seen;
+    // The 1.5 s sender prediction lease is not inferred from receipt time.
+    // Client-side expiry remains a separate 3 s missing-DE03 timeout.
+    h.tick(receipt+2);assert(target.status==0&&target.track_state==2);
+    h.tick(receipt+3.01);
+    assert(target.status==2&&target.track_state==0&&target.detected==0);
+    assert(target.x==0&&target.y==0&&target.z==0&&target.pan==-32768&&target.tilt==-32768);
+    h.observe(7);h.client.command(0xED04,7,0,h.now);h.pump();
+    assert(target.status==3&&target.track_state==0&&target.detected==0&&target.pan==-32768&&target.tilt==-32768);
+    h.client.command(0xED04,7,1,h.now);h.pump();h.observe(7);
+    h.client.command(0xED06,0,0,h.now);h.pump();
+    assert(target.status==2&&target.track_state==0&&target.detected==0&&target.pan==-32768&&target.tilt==-32768);
+}
 static void stale_status_cannot_complete_reporting(){
     c2::rdr::Session client{42};
     client.connect(0);auto hello=client.take().at(0);
@@ -78,6 +106,7 @@ static void retries_preserve_packet_after_newer_poll(){
     assert(h.client.state().last_result==9); // Unconfirmed operation times out locally.
 }
 int main(){
+    prediction_state_and_invalidation();
     retries_preserve_packet_after_newer_poll();
     stale_status_cannot_complete_reporting();
     control_acknowledgements_without_echoed_arguments();
@@ -117,6 +146,6 @@ int main(){
     bounded.observe(1,false);assert(bounded.client.state().targets.at(1).status==2);
     bounded.client.command(0xED04,11,0,bounded.now);bounded.pump();
     assert(bounded.client.state().targets.size()==10&&bounded.client.state().excluded.count(11));
-    std::cout<<"PASS: 24-byte codec, idle connect, pending completion, per-ID aggregation/loss, exclusion/resume, stop/start, retry, dropped ED03, stale data, lease reconnect\n";
+    std::cout<<"PASS: 24-byte codec, raw observed/predicted/lost tracks, pose invalidation, idle connect, pending completion, per-ID aggregation/loss, exclusion/resume, stop/start, retry, dropped ED03, stale data, lease reconnect\n";
 return 0;
 }

@@ -87,7 +87,7 @@ public:
         known.insert(id);
         if(!reporting||excluded.count(id))return false;
         put(p,0,0xDE03);put(p,2,++tx_);put(p,4,last_);put(p,6,id);
-        for(unsigned i=26;i<32;++i)p[i]=0;
+        for(unsigned i=28;i<32;++i)p[i]=0;
         send_observation(p);return true;
     }
 };

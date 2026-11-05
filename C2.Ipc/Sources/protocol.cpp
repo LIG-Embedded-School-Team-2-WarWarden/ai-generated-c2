@@ -16,6 +16,7 @@ struct Writer {
             bytes.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
     }
     void operator()(std::int32_t& v) { auto bits = std::bit_cast<std::uint32_t>(v); (*this)(bits); }
+    void operator()(std::int16_t& v) { auto bits = std::bit_cast<std::uint16_t>(v); (*this)(bits); }
     void operator()(float& v) { auto bits = std::bit_cast<std::uint32_t>(v); (*this)(bits); }
 };
 struct Reader {
@@ -28,6 +29,7 @@ struct Reader {
             v = static_cast<T>(v | (static_cast<std::uint64_t>(bytes[offset++]) << (8 * i)));
     }
     void operator()(std::int32_t& v) { std::uint32_t bits; (*this)(bits); v = std::bit_cast<std::int32_t>(bits); }
+    void operator()(std::int16_t& v) { std::uint16_t bits; (*this)(bits); v = std::bit_cast<std::int16_t>(bits); }
     void operator()(float& v) { std::uint32_t bits; (*this)(bits); v = std::bit_cast<float>(bits); }
 };
 template<class IO, class... Values> void fields(IO& io, Values&... values) { (io(values), ...); }

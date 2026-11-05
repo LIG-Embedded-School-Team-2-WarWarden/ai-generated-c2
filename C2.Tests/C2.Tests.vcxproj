@@ -82,6 +82,7 @@
     </ClCompile>
     <ClCompile Include="Sources\main.cpp" />
     <ClCompile Include="Sources\gui_v3.cpp" />
+    <ClCompile Include="Sources\rdr_live_diagnostics.cpp" />
     <ClCompile Include="Sources\rdr_icd_contract.cpp">
       <PreprocessorDefinitions>main=rdr_icd_contract_entry;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>

@@ -33,8 +33,6 @@ ClientConfig config(c2::Endpoint peer) {
     ClientConfig c;
     c.peer = std::move(peer); c.local.bind_address = "127.0.0.1";
     c.response_timeout = 150ms;
-    c.minimum_elevation = -30; c.maximum_elevation = 90;
-    c.minimum_azimuth = -180; c.maximum_azimuth = 180;
     return c;
 }
 void codec_tests() {
@@ -194,12 +192,19 @@ void client_tests() {
     check(client.query().has_value() && client.snapshot().status->elevation == -32768 &&
           client.snapshot().status->azimuth == -32768, "unknown status angles preserved");
     unknown_angles = false;
+    check(client.point(-7.9,150.4).has_value() && pointed_elevation==-79 && pointed_azimuth==1504,
+          "negative tilt from live assignment is sent without ECS mechanical limits");
+    check(client.point(99,400).has_value() && pointed_elevation==990 && pointed_azimuth==4000,
+          "angles outside former installation limits reach the device");
+    check(client.point(-3276.7,3276.7).has_value() && pointed_elevation==-32767 && pointed_azimuth==32767,
+          "signed wire angle bounds remain supported");
     const auto before = control_count.load();
-    rejects([&] { (void)client.point(-31, 90); });
+    rejects([&] { (void)client.point(3276.8, 90); });
+    rejects([&] { (void)client.point(20, -3276.8); });
     rejects([&] { (void)client.point(20.55, 90); });
     rejects([&] { (void)client.point(std::numeric_limits<double>::quiet_NaN(), 90); });
     rejects([&] { (void)client.point(20, std::numeric_limits<double>::infinity()); });
-    check(control_count == before, "out-of-range command not sent");
+    check(control_count == before, "invalid wire angles are not sent");
     drop_control = true;
     check(!client.demo(), "control timeout has unknown outcome");
     check(control_count == before + 1, "control command not retried");
@@ -217,10 +222,6 @@ void client_tests() {
     client.stop();
     check(waiting.wait_for(1s) == std::future_status::ready, "stop wakes pending request");
     check(!waiting.get(), "stopped request has unknown outcome");
-    auto missing_limits = config(server.local_endpoint());
-    missing_limits.minimum_elevation.reset(); missing_limits.maximum_elevation.reset();
-    Client unconfigured(missing_limits);
-    rejects([&] { (void)unconfigured.point(0, 0); });
     server.stop(); wrong_source.stop();
 }
 }  // namespace
