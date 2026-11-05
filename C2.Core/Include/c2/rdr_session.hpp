@@ -1,6 +1,9 @@
 #pragma once
-// RDR-ECS v0.7 local1: exactly 24 bytes, explicit big endian, one target/DE03.
+// RDR-ECS ICD revision 6: 24-byte controls, 32-byte float32 metre DE03.
 #include <array>
+#include <span>
+#include <bit>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -10,11 +13,11 @@
 #include <algorithm>
 namespace c2::rdr {
 using Packet=std::array<uint8_t,24>;
-inline uint16_t word(const Packet&p,unsigned n){return uint16_t((unsigned(p.at(n))<<8)|p.at(n+1));}
+inline uint16_t word(std::span<const uint8_t> p,unsigned n){return uint16_t((unsigned(p[n])<<8)|p[n+1]);}
 inline void word(Packet&p,unsigned n,uint16_t v){p.at(n)=uint8_t(v>>8);p.at(n+1)=uint8_t(v);}
-inline uint32_t token(const Packet&p){return (uint32_t(word(p,10))<<16)|word(p,12);}
+inline uint32_t token(std::span<const uint8_t> p){return (uint32_t(word(p,10))<<16)|word(p,12);}
 inline bool newer(uint16_t a,uint16_t b){auto d=uint16_t(a-b);return d&&d<32768;}
-inline int signed_word(const Packet&p,unsigned n){const int v=word(p,n);return v>=32768?v-65536:v;}
+inline int signed_word(std::span<const uint8_t> p,unsigned n){const int v=word(p,n);return v>=32768?v-65536:v;}
 struct Target {uint16_t id{};double x{},y{},z{},seen{};uint8_t status{2};};
 struct State {
     uint64_t generation{}; // Local session lifetime; never serialized on the wire.
@@ -46,7 +49,7 @@ class Session {
         state_={};state_.generation=++generation_;state_.last_result=1;state_.last_command=0xED01;polls_.clear();issued_.clear();operation_.reset();outgoing_.clear();
         hello_=Pending{make(0xED01),now,now};outgoing_.push_back(hello_->packet);
     }
-    bool status(const Packet&p,double now){
+    bool status(std::span<const uint8_t> p,double now){
         const auto tx=word(p,2);if(have_status_&&!newer(tx,status_sequence_))return false;
         const auto flags=word(p,20);if((flags>>8)>4)return false;
         have_status_=true;status_sequence_=tx;state_.mode=flags>>8;state_.reporting=(flags&4)!=0;
@@ -70,21 +73,26 @@ public:
         operation_=Pending{make(msg,a,b),now,now};outgoing_.push_back(operation_->packet);
         state_.last_command=msg;state_.last_result=1;return 1;
     }
-    void receive(const Packet&p,double now){
+    void receive(std::span<const uint8_t> p,double now){
+        if(p.size()<6)return;
         const auto msg=word(p,0),rx=word(p,4),tx=word(p,2);
         if(msg==0xDE03){
-            if(!state_.connected||state_.mode!=2||!state_.reporting||!word(p,6)||word(p,18)>1||word(p,20)||word(p,22))return;
+            if(p.size()!=32||!state_.connected||state_.mode!=2||!state_.reporting||!word(p,6)||word(p,24)>1)return;
+            for(unsigned i=26;i<32;++i)if(p[i])return;
+            auto coordinate=[&](unsigned n){return std::bit_cast<float>((uint32_t(word(p,n))<<16)|word(p,n+2));};
+            const float x=coordinate(8),y=coordinate(12),z=coordinate(16);
+            if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z))return;
             if(std::find(issued_.begin(),issued_.end(),rx)==issued_.end())return;
             if(have_data_&&!newer(tx,data_sequence_))return;
             have_data_=true;data_sequence_=tx;auto id=word(p,6);
             if(state_.excluded.count(id))return;
             if(!state_.targets.count(id)&&state_.targets.size()>=10)return;
             auto&t=state_.targets[id];t.id=id;t.seen=now;
-            t.status=word(p,18)?0:2;
-            t.x=t.status?0:signed_word(p,8)/1000.;t.y=t.status?0:signed_word(p,10)/1000.;t.z=t.status?0:signed_word(p,12)/1000.;
+            t.status=word(p,24)?0:2;
+            t.x=t.status?0:x;t.y=t.status?0:y;t.z=t.status?0:z;
             return;
         }
-        if(token(p)!=token_||word(p,14)>8)return;
+        if(p.size()!=24||token(p)!=token_||word(p,14)>8||word(p,22))return;
         if(msg==0xDE01&&hello_&&rx==word(hello_->packet,2)){
             if(word(p,14)==0&&status(p,now)){state_.connected=true;state_.last_result=0;hello_.reset();next_poll_=now;}
             return;

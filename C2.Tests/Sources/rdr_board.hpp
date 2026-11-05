@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -8,7 +9,7 @@
 namespace Rdr {
 using Packet=std::array<uint8_t,24>;
 inline uint16_t get(const Packet&p,unsigned o){return uint16_t(p.at(o)*256u+p.at(o+1));}
-inline void put(Packet&p,unsigned o,uint16_t v){p.at(o)=uint8_t(v>>8);p.at(o+1)=uint8_t(v);}
+template<size_t N> inline void put(std::array<uint8_t,N>&p,unsigned o,uint16_t v){p.at(o)=uint8_t(v>>8);p.at(o+1)=uint8_t(v);}
 inline uint32_t session(const Packet&p){return uint32_t(get(p,10))*65536u+get(p,12);}
 inline void session(Packet&p,uint32_t s){put(p,10,uint16_t(s>>16));put(p,12,uint16_t(s));}
 inline bool newer(uint16_t a,uint16_t b){const auto d=uint16_t(a-b);return d!=0&&d<32768;}
@@ -80,13 +81,14 @@ public:
         connected=false;reporting=false;pending_valid_=false;
         if(mode!=IDLE){mode=STOPPING;if(!control(false))mode=FAULT;}
     }}
-    bool observation(Packet p,uint16_t id){
+    std::function<void(const std::array<uint8_t,32>&)> send_observation=[](const auto&){};
+    bool observation(std::array<uint8_t,32> p,uint16_t id){
         if(!id||!connected||mode!=ACTIVE)return false;
         known.insert(id);
         if(!reporting||excluded.count(id))return false;
         put(p,0,0xDE03);put(p,2,++tx_);put(p,4,last_);put(p,6,id);
-        for(unsigned i=20;i<24;++i)p[i]=0;
-        send(p);return true;
+        for(unsigned i=26;i<32;++i)p[i]=0;
+        send_observation(p);return true;
     }
 };
 }

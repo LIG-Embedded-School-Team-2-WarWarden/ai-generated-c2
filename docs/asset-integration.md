@@ -1,6 +1,6 @@
 # RDR/FCS 연결
 
-현재 C2는 RDR ED/DE 24바이트와 FCS EF/FE 8·12바이트 UDP 이진 ICD를 사용합니다.
+현재 C2는 RDR 제어 24바이트·DE03 32바이트와 FCS EF/FE 8·12바이트 UDP 이진 ICD를 사용합니다.
 Protobuf 등록, OBS/EFF 명령, UDP 5000 경로는 현재 실행에 사용하지 않습니다.
 
 ## 실장비 주소

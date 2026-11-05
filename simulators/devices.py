@@ -172,7 +172,7 @@ class Devices:
                             except BlockingIOError:
                                 break
                             handler(raw, peer, now)
-                    if self.connected and self.reporting and self.mode == 2 and now >= report_at:
+                    if self.connected and self.reporting and self.mode == 2 and self.scenario != 'rdr-offline' and now >= report_at:
                         report_at = now + .2
                         for index in range(self.target_count):
                             ident = 1001 + index
@@ -181,10 +181,10 @@ class Devices:
                             detected = self.scenario != 'empty'
                             x, y, z = -1400 + 300 * index, 350 + 65 * index, 2800 + 500 * index
                             self.rdr_tx = (self.rdr_tx + 1) & 65535
-                            self._send_rdr([0xDE03, self.rdr_tx, self.rx, ident,
-                                x if detected else 0, y if detected else 0, z if detected else 0,
+                            self.rdr.sendto(struct.pack('!4H3fhhH6x', 0xDE03, self.rdr_tx, self.rx, ident,
+                                x / 1000 if detected else 0, y / 1000 if detected else 0, z / 1000 if detected else 0,
                                 round(self.tilt * 10) if detected else -32768,
-                                round(self.pan * 10) if detected else -32768, int(detected), 0, 0])
+                                round(self.pan * 10) if detected else -32768, int(detected)), self.rdr_peer)
         except BaseException as error:
             self.error = error
             self.done.set()

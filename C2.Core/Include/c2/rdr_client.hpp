@@ -16,8 +16,8 @@ class Client {
 public:
     Client(UdpConfig local,Endpoint peer):peer_(std::move(peer)),session_(std::random_device{}()),
         transport_(std::move(local),[this](auto bytes,auto from){
-            if(from.address!=peer_.address||from.port!=peer_.port||bytes.size()!=24)return;
-            Packet p{};for(size_t i=0;i<24;++i)p[i]=std::to_integer<uint8_t>(bytes[i]);
+            if(from.address!=peer_.address||from.port!=peer_.port||(bytes.size()!=24&&bytes.size()!=32))return;
+            std::vector<uint8_t> p;for(auto b:bytes)p.push_back(std::to_integer<uint8_t>(b));
             std::lock_guard lock(mutex_);session_.receive(p,seconds());flush();
         }){
             if(peer_.address.empty() || !peer_.port)throw std::invalid_argument("invalid RDR endpoint");

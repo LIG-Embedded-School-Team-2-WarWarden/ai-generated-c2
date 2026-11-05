@@ -61,13 +61,13 @@ class Board:
                         response[3] = response[4] = 0
                     self.cache[request[1]] = response
                     self.send(response)
-                if self.connected and self.reporting and self.mode == 2 and now >= emit:
+                if self.connected and self.reporting and self.mode == 2 and not self.drop and now >= emit:
                     emit = now + 0.15
                     for ident, xyz in [(7, (469, -109, 2229)), (19, (-750, 0, 2600))]:
                         if ident in self.excluded:
                             continue
                         self.tx = (self.tx + 1) & 65535
-                        self.send([0xDE03, self.tx, self.rx, ident, *xyz, 123, -153, 1, 0, 0])
+                        self.socket.sendto(struct.pack('!4H3fhhH6x', 0xDE03, self.tx, self.rx, ident, *(v / 1000 for v in xyz), 123, -153, 1), self.peer)
                 try:
                     data, source = self.socket.recvfrom(512)
                 except socket.timeout:

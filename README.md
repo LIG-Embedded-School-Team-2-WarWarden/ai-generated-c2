@@ -14,7 +14,7 @@ Visual Studio에서 파일 추가와 프로젝트 속성을 직접 관리합니�
 | docs | 장비 통신·외부 화면 연결 규격 |
 | x64 / obj | 빌드 결과 / 중간 파일(자동 생성) |
 
-장비 통신은 **RDR ED/DE 24바이트**, **FCS EF/FE 8·12바이트** Big Endian ICD만 사용합니다.
+장비 통신은 **RDR 제어 24바이트·DE03 32바이트**, **FCS EF/FE 8·12바이트** Big Endian ICD만 사용합니다.
 JSON 헤더는 C2.Core/Include/nlohmann에 포함되어 있습니다. 빌드는 Visual Studio C++ 도구만 필요합니다.
 GUI 프로그램은 별도 저장소에서 실행하며, C2에는 화면 코드가 없습니다.
 
