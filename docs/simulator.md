@@ -20,6 +20,8 @@
 
 GUI 소스 기본 위치는 프로젝트 옆의 `../c2-GUI`입니다. 확인한 원본은 GUI PR #5/#6의
 `94bca8c5c477e4cf1bb15b93c288a5c450603910`이며 해당 폴더의 SOURCE_REVISION.txt에 기록했습니다.
+모의기 전용 파이프 설정은 [GUI PR #7](https://github.com/LIG-Embedded-School-Team-2-WarWarden/c2-GUI/pull/7)에 있습니다.
+해당 변경이 포함된 GUI 또는 아래의 한 줄 수정을 적용한 GUI를 사용합니다.
 제어창을 닫거나 WPF를 종료하면 이 실행에서 만든 C2와 모의기만 정리합니다.
 이미 실행 중인 다른 통제소는 종료하지 않습니다.
 
