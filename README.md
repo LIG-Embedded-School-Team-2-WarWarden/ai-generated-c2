@@ -62,4 +62,26 @@ ED/DE 보드에 고각 설정 메시지가 없어 GUI 고각 설정은 미지원
 
 `./scripts/run_simulator.ps1 -Gui`로 RDR/FCS 모의기 제어창, C2, WPF를 함께 실행합니다.
 정상·표적 소실·연결 끊김·FCS 결함을 선택할 수 있습니다. 통신은 localhost로 제한하며
-기존 통제소와 분리된 IPC 이름을 사용합니다. 자세한 실행 방법은 [모의기 안내](docs/simulator.md)를 참고하세요.
+원본 GUI의 기본 IPC 이름을 사용합니다. 기존 C2와 WPF를 종료한 뒤 실행하세요.
+GUI 소스 수정이나 사용자 환경변수 설정은 필요하지 않습니다.
+
+이미 빌드된 C2와 WPF가 있으면 Python으로 직접 실행할 수 있습니다.
+PowerShell 실행 정책으로 `.ps1`이 차단된 경우에도 아래 명령을 사용할 수 있습니다.
+
+```powershell
+python .\simulators\run.py --gui ..\c2-GUI\build\Release\AadcCommandCenter.exe
+```
+
+실행기가 C2도 함께 켜므로 ECS를 별도로 실행할 필요가 없습니다.
+`--gui`를 생략하면 장치 모의기·C2·제어창만 실행합니다.
+자세한 방법은 [모의기 안내](docs/simulator.md)를 참고하세요.
+
+## 문서
+
+- [실장비 주소와 연결](docs/asset-integration.md), [RDR ED/DE 연결](docs/rdr-edde24.md)
+- [콘솔 명령](docs/console-mvp.md), [FCS 수동 동작과 GUI 데모](docs/laser-control.md)
+- [장비 ICD](docs/device-icd.md), [GUI IPC v3](docs/operator-ipc.md)
+- [현재 코드 구조](docs/software-design.md), [빌드와 검증](docs/development-process.md)
+- [모의기 실행](docs/simulator.md), [WPF 검증 기록](docs/wpf-verification.md)
+
+구형 CMake/Protobuf 런타임·OBS/EFF CLI·GUI v2 코드는 제거했습니다. 이전 구현은 Git 이력에서 확인할 수 있습니다.
