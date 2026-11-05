@@ -23,7 +23,7 @@ v2 프레임·요청은 호환되지 않습니다. `--ipc-suffix`는 모의 시�
 
 RDR/FCS/표적의 방위각·고각은 도 단위 float이며 소수점 한 자리까지 표시합니다.
 장치 RDR/FCS는 signed int16, 0.1도 단위입니다. ECS 수신 시 /10.0으로 변환합니다.
-미상값 -32768은 변환 전에 판별합니다. XYZ는 장치 mm에서 m로 변환합니다.
+미상값 -32768은 변환 전에 판별합니다. RDR XYZ는 DE03의 float32 미터 좌표를 사용합니다.
 
 RDR Base(right,up,forward)는 GUI(X,Y,Z)=(BaseX,BaseZ,BaseY)로 옮기고 RDR 표시 위치를 더합니다.
 각도와 거리는 RDR 기준 측정값입니다. RDR 방위각은 135-pan, FCS는 모터180도를 GUI135도로 변환합니다.

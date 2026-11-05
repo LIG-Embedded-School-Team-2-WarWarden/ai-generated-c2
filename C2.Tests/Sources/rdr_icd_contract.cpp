@@ -2,13 +2,9 @@
 #include <iostream>
 #include <stdexcept>
 
-// Independent RDR-ECS v0.7 local1 wire examples, transcribed from the received
-// c2-lidar-complete board/zybo/rdr_ecs/{protocol.hpp,de03_sender.h} contract.
-// Received protocol.hpp SHA256:
-// 92e1f1fa2baf501100df8cee4e237e583d5a317afded1b2414c02a9d32730e54
-// tests/rdr_board.hpp is the matching board fixture. These examples deliberately
-// use neither that fixture nor Session's word()/make() helpers to construct bytes.
-// There is no dependency on the received folder, sockets, or physical hardware.
+// Independent literal fixtures from Confluence RDR-ECS ICD page 37355617,
+// revision 6 (2026-11-05): controls 24 bytes, DE03 32 bytes / float32 metres.
+// User confirmed all RDR angles use 0.1 degrees despite remaining prose conflicts.
 using c2::rdr::Packet;
 using c2::rdr::Session;
 
@@ -66,17 +62,32 @@ int main() {
     check(client.state().mode == 2 && client.state().last_result == 0,
           "final DE06 must complete start in ACTIVE");
 
-    // DE03 has signed XYZ at 8/10/12, TILT at 14, PAN at 16, detected at 18.
-    // Its offset 14 is not the control-result field, and it has no token field.
-    client.receive(Packet{
-        0xde,0x03, 0,5, 0x44,0x51, 0,7, 0xfe,0x70, 0,0x7d,
-        0xf7,0x68, 0x80,0, 0xff,0x6f, 0,1, 0,0, 0,0}, .5);
+    // Literal big-endian float32: -0.4, 0.125, -2.2 metres.
+    const std::array<uint8_t,32> observation{
+        0xde,0x03, 0,5, 0x44,0x51, 0,7,
+        0xbe,0xcc,0xcc,0xcd, 0x3e,0,0,0, 0xc0,0x0c,0xcc,0xcd,
+        0x80,0, 0xff,0x6f, 0,1, 0,0,0,0,0,0};
+    // Invalid packets must not create a target or consume its sequence number.
+    for(size_t length : {size_t(0),size_t(5),size_t(24),size_t(31)})
+        client.receive(std::span(observation).first(length), .45);
+    for(size_t offset=26;offset<32;++offset){
+        auto bad=observation;bad[offset]=1;client.receive(bad,.45);
+    }
+    for(size_t offset : {size_t(8),size_t(12),size_t(16)}){
+        auto bad=observation;bad[offset]=0x7f;bad[offset+1]=0x80;
+        bad[offset+2]=bad[offset+3]=0;client.receive(bad,.45); // infinity
+        bad[offset+2]=1;client.receive(bad,.45); // NaN
+    }
+    auto bad_detected=observation;bad_detected[25]=2;client.receive(bad_detected,.45);
+    check(client.state().targets.empty(),"reject wrong lengths, padding, nonfinite coordinates and invalid detection");
+    client.receive(observation, .5);
     const auto& target = client.state().targets.at(7);
-    check(target.status == 0 && target.x == -.4 && target.y == .125 && target.z == -2.2,
-          "DE03 signed millimetres and detection flag must decode independently");
-    client.receive(Packet{
-        0xde,0x03, 0,6, 0x44,0x51, 0,7, 0,0, 0,0,
-        0,0, 0x80,0, 0x80,0, 0,0, 0,0, 0,0}, .6);
+    check(target.status == 0 && std::abs(target.x+.4)<1e-6 && target.y == .125 && std::abs(target.z+2.2)<1e-6,
+          "DE03 float32 metre coordinates and detection flag decode independently");
+    auto missing=observation;missing[3]=6;
+    std::fill(missing.begin()+8,missing.begin()+20,0);
+    missing[20]=missing[22]=0x80;missing[21]=missing[23]=0;missing[25]=0;
+    client.receive(missing,.6);
     check(target.status == 2 && target.x == 0 && target.y == 0 && target.z == 0,
           "DE03 detected=0 must invalidate the measurement");
 
@@ -113,6 +124,6 @@ int main() {
         0x56,0x79, 0,0, 0x80,0, 0x80,0, 0,5, 0,0}, 1);
     check(client.state().mode == 0 && client.state().last_result == 0,
           "final DE06 must complete stop in IDLE");
-    std::cout << "PASS: received RDR local1 literal 24-byte C2 contract\n";
+    std::cout << "PASS: RDR ICD 24-byte controls, 32-byte float32 DE03 and malformed data rejection\n";
 return 0;
 }

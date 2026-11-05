@@ -1,4 +1,4 @@
-# RDR ED/DE 24바이트 연결
+# RDR 제어 24바이트·DE03 32바이트 연결
 
 현재 RDR 코드는 `C2.Core/Include/c2/rdr_client.hpp`와 `rdr_session.hpp`입니다.
 `C2.Console.exe`에서 사용하며 Protobuf나 이전 c2_mvp_console은 필요하지 않습니다.
@@ -39,6 +39,10 @@ rdr stop
 연결은 자동입니다. 최초 연결·재연결 뒤 보고 허용과 감시 시작은 명시적으로 요청합니다.
 GUI 구동은 ED03 보고 허용 후 DE02 확인을 거쳐 ED06 시작을 보냅니다.
 정지 시 측정값을 무효화하며 재연결만으로 감시를 재개하지 않습니다.
-24바이트 Big Endian이며 좌표는 Base(right,up,forward), mm입니다.
+제어는 24바이트, DE03은 32바이트 Big Endian이며 좌표는 Base(right,up,forward), float32 미터입니다.
+DE03: ID@0, TxSeq@2, RxSeq@4, TargetID@6, X@8, Y@12, Z@16, 고각@20, 방위각@22, Detected@24, 영 패딩@26~31.
+구형 24바이트 DE03, 길이 오류, 비유한 좌표, 잘못된 Detected·패딩은 거부합니다.
+기준: [RDR-ECS ICD 버전 6](https://ligproject2team.atlassian.net/wiki/spaces/MFS/pages/37355617/RDR-ECS+ICD).
+문서에 남은 0.01도 표기는 사용자 확인으로 모든 RDR 응답에 0.1도를 적용합니다.
 팬·틸트는 signed int16, 0.1도 단위이고 -32768은 미상입니다.
 현재 보드에 고각 설정 명령은 없습니다. [장비 ICD](device-icd.md)를 참고하세요.

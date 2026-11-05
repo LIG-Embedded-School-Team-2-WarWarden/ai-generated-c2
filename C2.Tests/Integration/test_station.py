@@ -188,7 +188,7 @@ def main():
             wait('rdr status', lambda value: value['mode'] == 2)
             targets = wait('rdr targets', lambda value: len(value) == 2)
             target = next(t for t in targets if t['id'] == 7)
-            assert target['x'] == .469 and target['y'] == -.109 and target['z'] == 2.229
+            assert all(abs(target[k]-v)<1e-6 for k,v in zip(('x','y','z'),(.469,-.109,2.229)))
             ask('rdr exclude 7')
             wait('rdr targets', lambda value: any(t['id'] == 7 and t['status'] == 3 for t in value))
             ask('rdr resume 7')

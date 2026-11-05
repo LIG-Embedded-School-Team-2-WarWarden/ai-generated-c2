@@ -19,7 +19,7 @@
 | C2.Tests | 장비 측 fixture 및 ICD·UDP·IPC 회귀 시험 |
 | simulators/devices.py, run.py | loopback 모의 장치와 실행·제어창 |
 
-RDR DE03은 Base(right,up,forward), mm입니다. GUI 위치는 (right,forward,up), m입니다.
+RDR DE03은 32바이트이며 Base(right,up,forward), float32 미터 좌표입니다. GUI 위치는 (right,forward,up), m입니다.
 할당은 RDR 측정 벡터에 RDR 위치를 더하고 FCS 위치를 빼서 FCS 기준으로 계산합니다.
 고각·모터 방위각을 0.1도 간격으로 반올림하고 FCS 한계를 검사합니다.
 위치를 바꾸면 기존 정렬을 무효화하며 재할당해야 합니다.

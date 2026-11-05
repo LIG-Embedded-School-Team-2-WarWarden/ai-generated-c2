@@ -23,7 +23,7 @@ python .\C2.Tests\Integration\test_simulator.py --console .\x64\Release\C2.Conso
 
 | 시험 | 확인 사항 |
 |---|---|
-| C2.Tests.exe | RDR 24바이트·FCS 8/12바이트, 장비 fixture, 응답 검증·세션 |
+| C2.Tests.exe | RDR 제어 24바이트·DE03 32바이트·FCS 8/12바이트, 장비 fixture, 응답 검증·세션 |
 | test_station.py | UDP·Windows IPC v3, 소수 각도, XYZ, 구동·정지, CLI·종료 |
 | test_simulator.py | 표적10개, 할당·데모·취소, 위치에 따른 FCS 각도·정렬 무효화, 소실·결함·단절·복구 |
 

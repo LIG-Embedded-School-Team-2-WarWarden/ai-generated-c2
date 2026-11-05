@@ -5,14 +5,15 @@
 struct Harness {
     c2::rdr::Session client{123};Rdr::Engine board;double now=0;int starts=0,stops=0;
     Rdr::Packet last{};
-    Harness(){board.send=[&](const Rdr::Packet&p){last=p;client.receive(p,now);};
+    std::array<uint8_t,32> last_observation{};
+    Harness(){board.send_observation=[&](const auto&p){last_observation=p;client.receive(p,now);};board.send=[&](const Rdr::Packet&p){last=p;client.receive(p,now);};
         board.control=[&](bool start){start?++starts:++stops;return true;};}
     void pump(){for(unsigned i=0;i<10;++i){auto out=client.take();if(out.empty())return;for(const auto&p:out){assert(p.size()==24);board.receive(p,now);}}assert(false);}
     void tick(double time){now=time;client.tick(now);pump();board.tick(now);}
     void connect(){assert(client.take().empty());client.connect(now);pump();tick(now);assert(client.state().connected);assert(board.mode==Rdr::IDLE&&starts==0);}
     void start(){assert(client.command(0xED06,1,0,now)==1);pump();assert(client.state().last_result==1);assert(board.mode==Rdr::STARTING);board.complete(true,true);assert(client.state().mode==2&&client.state().last_result==0);}
     void reporting(){assert(client.command(0xED03,1,0,now)==1);pump();tick(now+1.1);assert(client.state().reporting&&client.state().last_result==0);}
-    void observe(uint16_t id,bool detected=true){Rdr::Packet p{};Rdr::put(p,18,detected?1:0);Rdr::put(p,8,uint16_t(-463));Rdr::put(p,10,uint16_t(-106));Rdr::put(p,12,2232);board.observation(p,id);}
+    void observe(uint16_t id,bool detected=true){std::array<uint8_t,32> p{};Rdr::put(p,24,detected?1:0);auto coord=[&](unsigned n,float v){auto bits=std::bit_cast<uint32_t>(v);Rdr::put(p,n,uint16_t(bits>>16));Rdr::put(p,n+2,uint16_t(bits));};coord(8,-.463f);coord(12,-.106f);coord(16,2.232f);board.observation(p,id);}
 };
 static void stale_status_cannot_complete_reporting(){
     c2::rdr::Session client{42};
@@ -81,9 +82,9 @@ int main(){
     stale_status_cannot_complete_reporting();
     control_acknowledgements_without_echoed_arguments();
     Harness h;h.connect();h.reporting();h.start();h.observe(1);h.observe(2);
-    auto s=h.client.state();assert(s.targets.size()==2&&s.targets.at(1).x==-.463&&s.targets.at(1).y==-.106&&s.targets.at(1).z==2.232);
+    auto s=h.client.state();assert(s.targets.size()==2&&std::abs(s.targets.at(1).x+.463)<1e-6&&std::abs(s.targets.at(1).y+.106)<1e-6&&std::abs(s.targets.at(1).z-2.232)<1e-6);
     h.observe(1,false);assert(h.client.state().targets.at(1).status==2&&h.client.state().targets.at(1).x==0);assert(h.client.state().targets.at(2).status==0);
-    auto duplicate=h.last;h.now+=.1;h.client.receive(duplicate,h.now);assert(h.client.state().targets.at(1).seen!=h.now);
+    auto duplicate=h.last_observation;h.now+=.1;h.client.receive(duplicate,h.now);assert(h.client.state().targets.at(1).seen!=h.now);
     assert(h.client.command(0xED04,2,0,h.now)==1);
     auto exclude=h.client.take().at(0);auto wrong_request=exclude;
     Rdr::put(wrong_request,0,0xDE04);Rdr::put(wrong_request,2,100);
