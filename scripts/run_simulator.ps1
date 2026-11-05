@@ -14,9 +14,6 @@ if ($Headless) { $simArgs += '--headless' }
 if ($Gui) {
     $project = Join-Path $GuiDir 'AadcCommandCenter.csproj'
     if (-not (Test-Path -LiteralPath $project)) { throw "WPF source missing: $project. Specify -GuiDir with the c2-GUI v3 source." }
-    if (-not (Select-String -LiteralPath (Join-Path $GuiDir 'PipeCommandClient.cs') -SimpleMatch 'AADC9_PIPE_NAME' -Quiet)) {
-        throw 'This GUI needs the optional AADC9_PIPE_NAME override for isolated simulation. See docs/simulator.md.'
-    }
     $outputDir = Join-Path $GuiDir 'build/Release'
     if (-not $NoBuild) {
         & dotnet build $project -c Release -o $outputDir

@@ -20,20 +20,13 @@
 
 GUI 소스 기본 위치는 프로젝트 옆의 `../c2-GUI`입니다. 확인한 원본은 GUI PR #5/#6의
 `94bca8c5c477e4cf1bb15b93c288a5c450603910`이며 해당 폴더의 SOURCE_REVISION.txt에 기록했습니다.
-모의기 전용 파이프 설정은 [GUI PR #7](https://github.com/LIG-Embedded-School-Team-2-WarWarden/c2-GUI/pull/7)에 있습니다.
-해당 변경이 포함된 GUI 또는 아래의 한 줄 수정을 적용한 GUI를 사용합니다.
+GUI 소스 수정 없이 기존 `ECS_NamedPipe`와 기본 공유 메모리 이름으로 연결합니다.
+실행 전에 실제 운용 C2와 다른 모의기용 C2를 종료해야 합니다. 같은 PC에서 동시에 실행하지 않습니다.
 제어창을 닫거나 WPF를 종료하면 이 실행에서 만든 C2와 모의기만 정리합니다.
 이미 실행 중인 다른 통제소는 종료하지 않습니다.
 
-기본 GUI 연결 이름과 겹치지 않도록 `_sim_<id>` 접미사를 사용합니다.
-WPF는 기존 AADC9_SHARED_MEMORY_NAME/AADC9_SHARED_MEMORY_MUTEX_NAME과 함께
-선택적인 AADC9_PIPE_NAME 환경변수를 사용합니다. 원본 GUI에는 다음 한 줄의 변경만 적용했습니다.
-
-```csharp
-private static readonly string PipeName = Environment.GetEnvironmentVariable("AADC9_PIPE_NAME") ?? "ECS_NamedPipe";
-```
-
-환경변수가 없으면 기존 GUI 동작을 유지합니다. 각도·레이아웃·버튼 코드는 원본입니다.
+실행기는 WPF 자식 프로세스에 기본 공유 메모리 이름을 전달하고 `AADC9_PIPE_NAME` 환경변수를 제거합니다.
+Windows의 사용자·시스템 환경변수는 변경하지 않습니다. GUI PR #7은 필요하지 않습니다.
 
 ## 시나리오
 
@@ -72,7 +65,9 @@ c2.stdout.log, c2.stderr.log가 생성됩니다. control.json 형식은 다음�
 ```
 
 scenario는 normal/empty/rdr-offline/fcs-offline/fcs-fault입니다. stop.txt를 만들면 종료됩니다.
-GUI 메모리 이름은 simulator-state.json의 ipc_suffix로 확인할 수 있습니다.
+기본 실행의 simulator-state.json에서 ipc_suffix는 빈 문자열입니다.
+자동 시험은 `--isolated-ipc`로 `_sim_<id>` 접미사를 붙여 다른 실행과 분리합니다.
+이 옵션은 원본 WPF와 함께 사용할 수 없습니다.
 
 통신 자동 시험은 실제 Windows IPC를 이용해 10개 표적, 소수 각도, 모의 할당·동작·취소,
 소실·결함·연결 단절·복구·구동·정지를 검사합니다. 실제 WPF 창의 시각 검증 결과는 별도로 기록합니다.
