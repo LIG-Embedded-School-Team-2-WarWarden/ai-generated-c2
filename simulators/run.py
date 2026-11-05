@@ -35,9 +35,12 @@ def main():
     parser.add_argument('--console', type=Path, default=ROOT / 'x64/Release/C2.Console.exe')
     parser.add_argument('--gui', type=Path, help='WPF executable to launch')
     parser.add_argument('--headless', action='store_true', help='omit simulator control window')
+    parser.add_argument('--isolated-ipc', action='store_true', help='use unique IPC names for automated checks without WPF')
     parser.add_argument('--runtime', type=Path, default=ROOT / 'logs/simulator')
     parser.add_argument('--duration', type=float, default=0, help='optional unattended run limit, seconds')
     args = parser.parse_args()
+    if args.isolated_ipc and args.gui:
+        parser.error('--isolated-ipc cannot be used with the standard WPF GUI')
     if not args.console.is_file() or (args.gui and not args.gui.is_file()):
         parser.error('Build C2/WPF first, or use scripts/run_simulator.ps1 -Gui')
     args.runtime.mkdir(parents=True, exist_ok=True)
@@ -77,7 +80,7 @@ def main():
     children = []
     panel = None
     logs = []
-    ipc_suffix = '_sim_' + uuid.uuid4().hex[:10]
+    ipc_suffix = '_sim_' + uuid.uuid4().hex[:10] if args.isolated_ipc else ''
     try:
         for name in ('c2.stdout.log', 'c2.stderr.log'):
             logs.append((args.runtime / name).open('w', encoding='utf-8'))
@@ -91,8 +94,9 @@ def main():
             # WPF is explicitly requested as a visible interactive window.
             gui_env = dict(os.environ,
                 AADC9_SHARED_MEMORY_NAME='Local\\ControlStationMock.SharedMemory.v3' + ipc_suffix,
-                AADC9_SHARED_MEMORY_MUTEX_NAME='Local\\ControlStationMock.SharedMemory.Mutex.v3' + ipc_suffix,
-                AADC9_PIPE_NAME='ECS_NamedPipe' + ipc_suffix)
+                AADC9_SHARED_MEMORY_MUTEX_NAME='Local\\ControlStationMock.SharedMemory.Mutex.v3' + ipc_suffix)
+            # Also use the default pipe when launching a GUI that supports overrides.
+            gui_env.pop('AADC9_PIPE_NAME', None)
             children.append(subprocess.Popen([str(args.gui.resolve())], cwd=args.gui.resolve().parent, env=gui_env))
         print(f'RDR/FCS 모의기: 127.0.0.1:{devices.rdr_port} / 127.0.0.1:{devices.fcs_port}', flush=True)
         print(f'상태/시나리오: {args.runtime.resolve()}', flush=True)

@@ -29,7 +29,7 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='c2-simulator-') as directory:
         runtime = Path(directory)
-        process = subprocess.Popen([sys.executable, str(ROOT / 'simulators/run.py'), '--headless',
+        process = subprocess.Popen([sys.executable, str(ROOT / 'simulators/run.py'), '--headless', '--isolated-ipc',
             '--console', str(args.console.resolve()),
             '--runtime', str(runtime)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW)
