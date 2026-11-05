@@ -1,61 +1,33 @@
-# C++ 통제소의 객체지향 설계와 검증 근거
+# 현재 C2 구조
 
-실행 경로는 `c2_mvp_console → Engine → C2 서비스`입니다. Python 실행기와 Python 제어부는 제거했습니다.
-이번 담당 범위는 통제소입니다. 장치 내부 firmware, SDK, 모터 드라이버는 수정하지 않았습니다.
+진입점은 `C2.Console/Sources/main.cpp`입니다.
+장비 통신은 UDP Big Endian 이진 ICD, WPF 연결은 같은 PC의 IPC v3입니다.
+별도 GUI 저장소의 화면 소스는 이 저장소에서 수정하거나 포함하지 않습니다.
 
-## 책임과 의존성
+| 프로젝트·파일 | 책임 |
+|---|---|
+| C2.Console/Sources/main.cpp | 설정·CLI, 장치 상태 수집, GUI 요청, 프레임 게시, 할당 각도 계산 |
+| C2.Console/Headers/rdr_control.hpp | 보고 확인 후 감시 시작, 구동·정지 |
+| C2.Console/Headers/assignment_health.hpp | 할당·정렬 유효성 |
+| C2.Console/Headers/fcs_angles.hpp | 모터 각도와 GUI 각도 변환 |
+| C2.Console/Headers/installation_config.hpp | 설치 좌표 형식·검증 |
+| C2.Core/Include/c2/rdr_client.hpp, rdr_session.hpp | RDR 세션·연결·재전송·표적 상태 |
+| C2.Core/Sources/fcs_client.cpp, fcs_protocol.cpp | FCS 요청·응답과 코덱 |
+| C2.Core/Sources/udp_transport.cpp | UDP 송수신 |
+| C2.Ipc/Headers/protocol.hpp, Sources/protocol.cpp | IPC v3 구조·코덱 |
+| C2.Ipc/Sources/transport.cpp | Windows 공유 메모리·mutex·Named Pipe |
+| C2.Tests | 장비 측 fixture 및 ICD·UDP·IPC 회귀 시험 |
+| simulators/devices.py, run.py | loopback 모의 장치와 실행·제어창 |
 
-```mermaid
-flowchart TD
-    CLI[C++ CLI] --> Engine[Engine: 조립·Facade]
-    Engine --> Devices[DeviceSessions]
-    Engine --> Requests[RequestTracker]
-    Engine --> OBS[ObserverController]
-    Engine --> EFF[EffectorController]
-    Engine --> Observation[ObservationService / Cloud]
-    Requests --> Transport[DatagramTransport]
-    Transport --> UDP[UdpTransport]
-    Requests --> Clock[Clock]
-    EFF --> Solver[PointingSolver]
-    Observation --> Detector[PointDetector]
-    Detector --> Lidar[LidarDetector: 기존 C++ 검출기]
-```
+RDR DE03은 Base(right,up,forward), mm입니다. GUI 위치는 (right,forward,up), m입니다.
+할당은 RDR 측정 벡터에 RDR 위치를 더하고 FCS 위치를 빼서 FCS 기준으로 계산합니다.
+고각·모터 방위각을 0.1도 간격으로 반올림하고 FCS 한계를 검사합니다.
+위치를 바꾸면 기존 정렬을 무효화하며 재할당해야 합니다.
+자동 재지향·설치 회전축 보정·GUI 위치 편집의 영구 저장은 포함하지 않습니다.
 
-| 책임 | 실제 코드 | 규칙 |
-| --- | --- | --- |
-| 조립·분배 | `native/engine.cpp` | CLI 위임, 수신 분배, snapshot, 시간 변화 감지 |
-| 장치 | `native/devices.cpp` | 등록, boot/session 교체, 설치 확인, 상태·Heartbeat 순번 |
-| 요청 | `native/requests.cpp` | 값 복사, 동일 바이트 재전송, 응답 연결, 완료·취소·timeout |
-| EFF 명령 | `native/effector.cpp` | 단발 이동, 연속 aim, 관측·각도 한계, STOP fence와 후속 실측 확인 |
-| OBS 명령 | `native/observer.cpp`, `states.cpp` | EFF 정지 → 수집 중지 → 이동 → 결과와 실측 정지 → 수집 |
-| 관측 | `native/observation.cpp` | 조립, worker·최신 작업 1개, 시각·자세·설치 검증, 검출 결과 연속성 |
-| 외부 경계 | `transport.cpp`, `pointing.cpp`, `domain.hpp` | 가상 인터페이스와 실제 구현 |
-
-`Peer`, `EffectorSession`, `ObserverOperation`, `Observation`, `Installation`은 C++ 형식으로 표현합니다.
-JSON은 설정·CLI 출력·외부 시각 증빙에 사용하고, 주요 상태를 JSON 딕셔너리로 관리하지 않습니다.
-서비스는 Engine을 통해 협력하며 완전히 독립적인 도메인 계층은 아닙니다. 시간·통신·검출·계산 경계에서 의존성을 역전했습니다.
-
-## 패턴을 적용한 이유
-
-- **Strategy:** `PointingSolver::solve()`를 `EffectorController`에 주입합니다. `RelativePointingSolver`는 기존 설치값·상대 벡터·atan2 계산을 수행합니다. 계산을 교체해도 통제소의 한계 검사·명령 완료 규칙을 우회할 수 없습니다.
-- **Adapter:** `UdpTransport`는 소켓을 `DatagramTransport`로, `LidarDetector`는 기존 Watch::Detector의 입출력을 `PointDetector`로 연결합니다. Python·자식 검출 프로세스는 필요 없습니다.
-- **Facade:** CLI는 Engine을 통해 내부 서비스를 사용합니다.
-- **의존성 주입:** Clock, DatagramTransport, PointDetector, PointingSolver를 참조로 전달합니다. 수명은 조립 지점이 소유하며 Engine보다 오래 유지합니다.
-- **명시적 FSM:** `ObserverOperation::transition()`이 허용된 전이만 수락합니다. 상태별 클래스를 만든 GoF State 패턴은 아닙니다.
-
-## 실행과 동시성
-
-운영 CLI는 수신·tick 스레드와 stdin 스레드의 서비스 접근을 mutex로 직렬화합니다.
-검출 스레드는 완성 프레임 작업만 받아 계산하며, Engine의 장치·제어 상태에 접근하지 않습니다.
-세대 번호가 달라진 검출 결과는 폐기합니다. 작업 대기 슬롯은 최신 1개입니다.
-전송 중인 명령은 Protobuf 값 복사로 고정하고, 재전송은 직렬화한 같은 바이트를 재사용합니다.
-완료 콜백 호출 전에 pending에서 제거하므로 콜백이 STOP을 등록해도 새 요청을 지우지 않습니다.
-
-## 하드웨어 없이 검증
-
-`tests/native_behaviors.cpp`의 Fixture는 FakeClock, FakeTransport, FakeDetector, Solver를 생성하고
-`Engine(..., false)`로 worker 없이 조립합니다. 실제 소켓이나 sleep 없이 시간을 전진시켜 제어 규칙을 검사합니다.
-반면 `tests/test_native_mvp.py`는 실제 C++ 프로세스와 UDP를 사용하며 Python은 장치 더미와 시험 도구로만 실행합니다.
-C2 프로세스의 PATH를 비워 Python을 검색할 수 없는 조건에서도 같은 시나리오를 수행합니다.
-
-면접에서는 패턴 개수보다 **변경되는 계산·통신 구현과 유지돼야 할 제어 규칙을 분리해 검증 가능하게 만든 이유**를 설명합니다.
+기본 IPC 이름은 `ECS_NamedPipe`, `Local\\ControlStationMock.SharedMemory.v3`입니다.
+기본 C2는 하나만 실행합니다. 자동 시험의 별도 접미사는 원본 WPF와 함께 사용하지 않습니다.
+보드에 없는 고각 설정 명령은 NotSupported로 응답합니다.
+상태 최신성과 응답 peer·ID·순번·길이를 검사합니다.
+FCS 제어 응답 미수신은 결과 미확정이며 자동 재송신하지 않습니다.
+[GUI IPC](operator-ipc.md), [장비 ICD](device-icd.md)에 상세 규격이 있습니다.

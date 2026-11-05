@@ -25,6 +25,23 @@ GUI 소스 수정 없이 기존 `ECS_NamedPipe`와 기본 공유 메모리 이�
 제어창을 닫거나 WPF를 종료하면 이 실행에서 만든 C2와 모의기만 정리합니다.
 이미 실행 중인 다른 통제소는 종료하지 않습니다.
 
+모의기 실행기는 C2(ECS)도 자동으로 실행합니다. ECS를 따로 켜지 마세요.
+`--gui`를 생략하면 장치 모의기·C2·제어창만 실행하며 WPF는 띄우지 않습니다.
+
+### PowerShell에서 ps1 실행이 차단될 때
+
+Visual Studio에서 Release/x64로 C2를 빌드하고, 별도 GUI에서 빌드한 WPF 실행 파일을 준비합니다.
+이미 빌드돼 있으면 프로젝트 루트에서 다음 명령으로 직접 실행합니다.
+
+```powershell
+python .\simulators\run.py --gui ..\c2-GUI\build\Release\AadcCommandCenter.exe
+```
+
+Windows 실행 정책이나 사용자 환경변수를 바꿀 필요가 없습니다.
+`CreateNamedPipe ... Win32 231` 오류는 기존 서버가 기본 파이프를 점유한 경우입니다.
+기존 C2나 다른 모의 통제소를 종료하고 다시 실행합니다.
+GUI와 공유 메모리 이름을 바꾸거나 다른 통제소를 임의로 종료하지 않습니다.
+
 실행기는 WPF 자식 프로세스에 기본 공유 메모리 이름을 전달하고 `AADC9_PIPE_NAME` 환경변수를 제거합니다.
 Windows의 사용자·시스템 환경변수는 변경하지 않습니다. GUI PR #7은 필요하지 않습니다.
 
