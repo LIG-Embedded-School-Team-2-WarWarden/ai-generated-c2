@@ -63,7 +63,6 @@ def main():
     write_json(control_file, control)
     devices = Devices()
     config = json.loads((ROOT / 'configs/team-demo.json').read_text(encoding='utf-8'))
-    config['assignment_enabled'] = True  # Only this generated loopback simulation profile.
     config['rdr']['peer']['port'] = devices.rdr_port
     config['fcs']['peer']['port'] = devices.fcs_port
     for section in ('rdr', 'fcs'):

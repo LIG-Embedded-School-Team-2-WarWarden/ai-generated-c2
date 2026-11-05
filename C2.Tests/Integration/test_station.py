@@ -139,6 +139,8 @@ def main():
     try:
         with tempfile.TemporaryDirectory() as directory:
             config = json.loads((root / 'configs/team-demo.json').read_text(encoding='utf-8'))
+            # An old configuration must no longer disable GUI assignment.
+            config['assignment_enabled'] = False
             config['rdr']['peer']['port'] = rdr.port
             config['fcs']['peer']['port'] = fcs.port
             config_path = Path(directory) / 'config.json'
@@ -196,6 +198,12 @@ def main():
             assert abs(struct.unpack_from('<f', frame, 48)[0] - 150.3) < .001
             assert abs(struct.unpack_from('<f', frame, 52)[0] - 12.3) < .001
             assert gui.command(0, version=2) == 1  # Old GUI version cannot control this station.
+            wait('fcs status', lambda value: value['confirmed'] and value['connected'])
+            points = sum(packet[:2] == b'\xef\x03' for packet in fcs.wire)
+            assert gui.command(1, target=19) == 0
+            assert sum(packet[:2] == b'\xef\x03' for packet in fcs.wire) == points + 1
+            assert fcs.elevation == 0 and fcs.azimuth == 1961
+            assert gui.command(2, target=19) == 0
             assert gui.command(5, rdr=1, fcs=0, xyz=(1.25, -2.5, .75)) == 0
             assert gui.command(5, rdr=0, fcs=1, xyz=(-.5, 3, 1.5)) == 0
             frame = gui.wait(lambda raw: struct.unpack_from('<3f', raw, 56) == (1.25, -2.5, .75)
@@ -210,6 +218,9 @@ def main():
             assert gui.command(6, target=2) == 1
             assert gui.command(6, target=0) == 0
             gui.wait(lambda raw: struct.unpack_from('<I', raw, 40)[0] == 0 and struct.unpack_from('<I', raw, 128)[0] == 0)
+            points = sum(packet[:2] == b'\xef\x03' for packet in fcs.wire)
+            assert gui.command(1, target=19) == 2  # Stopped RDR still prevents assignment.
+            assert sum(packet[:2] == b'\xef\x03' for packet in fcs.wire) == points
             wait('rdr status', lambda value: value['mode'] == 0)
             ask('rdr report off')
             wait('rdr status', lambda value: not value['reporting'])
@@ -245,7 +256,7 @@ def main():
             assert rdr.error is None and fcs.error is None, (rdr.error, fcs.error)
             assert all(len(packet) == 24 for packet in rdr.wire)
             assert all(len(packet) in (8, 12) for packet in fcs.wire)
-            print('PASS: RDR/FCS UDP + GUI v3 named pipe/shared memory, fractional angles, XYZ editing, start/stop, validity, CLI and shutdown')
+            print('PASS: RDR/FCS UDP + GUI v3 named pipe/shared memory, legacy-config assignment, stopped-RDR rejection, fractional angles, XYZ editing, start/stop, validity, CLI and shutdown')
     finally:
         if gui:
             gui.close()

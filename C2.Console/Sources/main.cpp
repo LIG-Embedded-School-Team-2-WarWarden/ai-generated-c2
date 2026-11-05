@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
         unsigned rdr_port=1000, rdr_local_port=1000;
         std::string rdr_ip="192.168.0.101", rdr_local_ip;
         std::wstring ipc_suffix;
-        bool original_gui=true, real_rdr_mode=true, rdr_only=false, print_network=false, headless=false, assignment_enabled=false;
+        bool original_gui=true, real_rdr_mode=true, rdr_only=false, print_network=false, headless=false;
         for (int i=1; i<argc; ++i) {
             std::string option = argv[i];
             auto next = [&]() -> std::string { if (++i>=argc) throw std::invalid_argument("missing argument"); return argv[i]; };
@@ -141,7 +141,6 @@ int main(int argc, char** argv) {
                 config.local.bind_address=fcs_config.at("local").at("ip"); config.local.listen_port=parse_port(fcs_config.at("local").at("port").dump(),true);
                 config.peer.address=fcs_config.at("peer").at("ip"); config.peer.port=parse_port(fcs_config.at("peer").at("port").dump());
                 rdr_only=!fcs_config.value("enabled",true);
-                assignment_enabled=json.value("assignment_enabled",false);
                 const auto& limits=fcs_config.at("limits");
                 auto limit=[&](const char* key) {
                     const auto& value=limits.at(key);
@@ -429,7 +428,6 @@ int main(int argc, char** argv) {
                     else if (request.command == 4) result=request.target_id<=900?gui::Result::not_supported:gui::Result::invalid_request;
                     else if (request_ipc==rdr_control) result=gui::Result::not_supported;
                     else if (!client) result=gui::Result::not_supported;
-                    else if (request.command == 1 && !assignment_enabled) result=gui::Result::not_supported;
                     else if (request.command == 1) {
                         auto found = std::find_if(observation.targets.begin(), observation.targets.end(),
                             [&](const Target& t) { return t.id == request.target_id; });
