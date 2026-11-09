@@ -167,20 +167,12 @@ int gui_v3_entry() {
     c2::rdr::State fixed;fixed.connected=fixed.reporting=true;fixed.mode=2;fixed.generation=1;
     auto& tracked=fixed.targets[1];tracked.id=1;tracked.status=0;tracked.track_state=1;
     tracked.pan=1800;tracked.tilt=0;tracked.x=-2;tracked.y=1;tracked.z=3;
-    c2::rdr::WorldTargetStore store;
-    const auto first=store.update(fixed,{1,2,.5})[0];
-    tracked.pan=2400;tracked.tilt=300;tracked.x=4;tracked.y=-2;tracked.z=5;
-    const auto held=store.update(fixed,{1,2,.5})[0];
-    check(held.world.east==first.world.east && held.world.north==first.world.north &&
-        held.world.up==first.world.up,"fixed target retains identical world XYZ despite new raw XYZ and pose");
+    const auto first=c2::rdr::correct_targets(fixed,{1,2,.5})[0];
+    tracked.x=-4;tracked.y=2;tracked.z=5;
+    const auto latest=c2::rdr::correct_targets(fixed,{1,2,.5})[0];
+    check(latest.world.east==5 && latest.world.north==7 && latest.world.up==2.5 &&
+        latest.world.east!=first.world.east,"same ID uses the latest observation");
     tracked.track_state=0;tracked.status=2;
-    check(!store.update(fixed,{1,2,.5})[0].valid,"loss invalidates captured coordinate");
-    tracked.track_state=1;tracked.status=0;tracked.pan=1800;tracked.tilt=0;
-    const auto reacquired=store.update(fixed,{1,2,.5})[0];
-    check(reacquired.world.east==-3 && reacquired.world.north==7 && reacquired.world.up==-1.5,
-        "reacquired ID captures a new world point");
-    tracked.x=-9;fixed.generation++;
-    check(store.update(fixed,{1,2,.5})[0].world.east==10,"new session cannot reuse old target world position");
-    check(store.update(fixed,{2,2,.5})[0].world.east==11,"installation change rebuilds world position");
+    check(!c2::rdr::correct_targets(fixed,{1,2,.5})[0].valid,"loss invalidates world coordinate");
     return 0;
 }

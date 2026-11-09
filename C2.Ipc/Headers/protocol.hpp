@@ -21,7 +21,7 @@ constexpr wchar_t mutex_name[] = L"Local\\ControlStationMock.SharedMemory.Mutex.
 constexpr wchar_t pipe_path[] = L"\\\\.\\pipe\\ECS_NamedPipe";
 
 enum class Command : std::uint32_t {
-    status, assign, cancel, fire, set_rdr_elevation,
+    status, assign, cancel, active, set_rdr_elevation,
     set_asset_position, set_rdr_operating
 };
 enum class Result : std::uint32_t {
@@ -70,7 +70,7 @@ struct PipeCommand {
 };
 struct PipeResponse {
     std::uint32_t magic{pipe_magic}, version{pipe_version}, request_id{}, command{}, result{};
-    std::uint32_t fcs_id{}, target_id{}, assignment{}, fire{}, connected{};
+    std::uint32_t fcs_id{}, target_id{}, assignment{}, active{}, connected{};
 };
 #pragma pack(pop)
 static_assert(sizeof(RdrAsset) == 40 && sizeof(FcsAsset) == 40 && sizeof(Target) == 36);

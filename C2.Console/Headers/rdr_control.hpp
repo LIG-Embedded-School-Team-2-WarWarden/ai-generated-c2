@@ -110,7 +110,7 @@ public:
         if(q.request_id && q.rdr_id==1){gui_seen_=now;stopped_=false;heartbeat_seen_=true;}
         const auto state=driver_.snapshot();out.connected=state.connected;
         if(q.command>=10) {
-            out.fcs_id=command_;out.target_id=request_;out.assignment=state.mode;out.fire=state.reporting;
+            out.fcs_id=command_;out.target_id=request_;out.assignment=state.mode;out.active=state.reporting;
         }
         return out;
     }

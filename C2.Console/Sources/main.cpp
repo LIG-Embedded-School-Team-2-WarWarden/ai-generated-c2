@@ -2,8 +2,11 @@
 #include "c2/rdr_client.hpp"
 #include "rdr_control.hpp"
 #include "rdr_live_diagnostics.hpp"
+#include "target_position_filter.hpp"
+#include "rdr_coordinate_recorder.hpp"
 #include "transport.hpp"
 #include "assignment_health.hpp"
+#include "assignment_position_guard.hpp"
 #include "fcs_angles.hpp"
 #include "installation_config.hpp"
 #include <winsock2.h>
@@ -35,6 +38,26 @@ namespace gui = c2::ipc;
 namespace fcs = c2::fcs;
 static volatile std::sig_atomic_t quitting{};
 static void quit(int) { quitting = 1; }
+static const char* result_name(gui::Result result) {
+    switch(result) {
+    case gui::Result::success: return "success";
+    case gui::Result::invalid_request: return "invalid_request";
+    case gui::Result::asset_unavailable: return "asset_unavailable";
+    case gui::Result::not_assigned: return "not_assigned";
+    case gui::Result::already_assigned: return "already_assigned";
+    case gui::Result::not_supported: return "not_supported";
+    case gui::Result::device_error: return "device_error";
+    case gui::Result::status_pending: return "status_pending";
+    case gui::Result::target_pending: return "target_pending";
+    case gui::Result::target_changed: return "target_changed";
+    case gui::Result::device_fault: return "device_fault";
+    case gui::Result::alignment_required: return "alignment_required";
+    case gui::Result::device_busy: return "device_busy";
+    case gui::Result::response_timeout: return "response_timeout";
+    case gui::Result::device_rejected: return "device_rejected";
+    }
+    return "unknown";
+}
 static uint64_t unix_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -86,11 +109,10 @@ public:
     std::optional<std::string> next() {std::lock_guard lock(mutex);if(lines.empty())return {};auto line=lines.front();lines.pop_front();return line;}
     bool ended() {std::lock_guard lock(mutex);return closed&&lines.empty();}
 };
-static nlohmann::json rdr_json(const c2::rdr::State& state, c2::rdr::BasePoint origin,
-                               c2::rdr::WorldTargetStore& world_targets) {
+static nlohmann::json rdr_json(const c2::rdr::State& state,
+                               const std::vector<c2::rdr::CorrectedTarget>& corrected,
+                               const std::vector<c2::rdr::CorrectedTarget>& displayed) {
     nlohmann::json targets=nlohmann::json::array();
-    const auto corrected=world_targets.update(state,origin);
-    const auto displayed=c2::rdr::correct_targets(state,origin);
     for(const auto& point:corrected) {
         const auto id=point.id;const auto& t=state.targets.at(id);
         nlohmann::json row={{"id",id},{"raw_x",t.x},{"raw_y",t.y},{"raw_z",t.z},
@@ -112,12 +134,18 @@ static nlohmann::json rdr_json(const c2::rdr::State& state, c2::rdr::BasePoint o
 int main(int argc, char** argv) {
     void* ipc{};
     void* rdr_control{};
+    std::filesystem::path event_log_file;
+    std::ofstream events;
     try {
         fcs::ClientConfig config;
         config.peer = {"192.168.0.103", 2000}; config.local = {"192.168.0.102", 2000};
         config.response_timeout = std::chrono::milliseconds(200);
         std::filesystem::path stop_file, status_file, installation_file;
+        bool standalone_installation{};
+        std::filesystem::path rdr_record_file;
+        double rdr_record_seconds=30;
         InstallationConfig installation;
+        c2::rdr::TargetPositionFilterConfig position_filter_config;
         auto laser_deadline = Clock::time_point{};
         unsigned rdr_port=1000, rdr_local_port=1000;
         std::string rdr_ip="192.168.0.101", rdr_local_ip;
@@ -128,6 +156,9 @@ int main(int argc, char** argv) {
             auto next = [&]() -> std::string { if (++i>=argc) throw std::invalid_argument("missing argument"); return argv[i]; };
             if (option == "--help") {
                 std::cout << "C2 binary ICD server --config FILE [--ipc] [--headless --stop-file FILE] [--print-network]\n"
+                    "Event log: --event-log FILE (default logs/events.log; --status-file uses adjacent events.log)\n"
+                    "Positions: persisted in --config installation; without --config, installation.json beside executable\n"
+                    "Coordinate recording: --rdr-record FILE.csv [--rdr-record-seconds 30]\n"
                     "RDR: rdr connect|status|targets|live on|off|report on|off|start|stop|exclude ID|resume ID\n"
                     "FCS: fcs connect|status|point ELEVATION AZIMUTH|laser on|off; quit\n";
                 return 0;
@@ -145,8 +176,18 @@ int main(int argc, char** argv) {
             else if (option == "--rdr-local-ip" || option == "--rdr-bind") rdr_local_ip=next();
             else if (option == "--stop-file") stop_file = next();
             else if (option == "--status-file") status_file = next();
+            else if (option == "--event-log") event_log_file = next();
+            else if (option == "--rdr-record") rdr_record_file=next();
+            else if (option == "--rdr-record-seconds") {
+                const auto value=next();
+                const auto [end,error]=std::from_chars(value.data(),value.data()+value.size(),rdr_record_seconds);
+                if(error!=std::errc{} || end!=value.data()+value.size() || !std::isfinite(rdr_record_seconds) ||
+                   rdr_record_seconds<=0 || rdr_record_seconds>3600)
+                    throw std::invalid_argument("invalid rdr-record-seconds");
+            }
             else if (option == "--config") {
-                std::ifstream file(next()); if(!file) throw std::invalid_argument("configuration missing");
+                installation_file = std::filesystem::absolute(next());
+                std::ifstream file(installation_file); if(!file) throw std::invalid_argument("configuration missing");
                 nlohmann::json json; file>>json;
                 const auto& radar=json.at("rdr"); const auto& fcs_config=json.at("fcs");
                 if(radar.at("protocol")!="edde24" || fcs_config.at("protocol")!="effe") throw std::invalid_argument("unsupported binary ICD");
@@ -155,6 +196,8 @@ int main(int argc, char** argv) {
                 config.local.bind_address=fcs_config.at("local").at("ip"); config.local.listen_port=parse_port(fcs_config.at("local").at("port").dump(),true);
                 config.peer.address=fcs_config.at("peer").at("ip"); config.peer.port=parse_port(fcs_config.at("peer").at("port").dump());
                 rdr_only=!fcs_config.value("enabled",true);
+                position_filter_config=c2::rdr::parse_target_position_filter(
+                    radar.value("gui_kalman",nlohmann::json::object()));
             }
             else if (option == "--rdr-port" || option == "--rdr-real-port") rdr_port=parse_port(next());
             else if (option == "--rdr-local-port" || option == "--rdr-real-local-port") rdr_local_port=parse_port(next());
@@ -162,6 +205,8 @@ int main(int argc, char** argv) {
             else if (option == "--gui-extended") original_gui=false;
             else throw std::invalid_argument("unknown console option");
         }
+        c2::rdr::TargetPositionFilter position_filter(position_filter_config);
+        const auto position_filter_parameters=c2::rdr::target_position_filter_json(position_filter_config);
         if (rdr_local_ip.empty()) rdr_local_ip=config.local.bind_address;
         for (const auto& address : {config.local.bind_address,config.peer.address,rdr_ip,rdr_local_ip})
             validate_ipv4(address);
@@ -180,10 +225,39 @@ int main(int argc, char** argv) {
                 {"rdr_mode",real_rdr_mode?"real24":"draft"},{"fcs_enabled",!rdr_only}}.dump() << '\n';
             return 0;
         }
+        if(event_log_file.empty()) event_log_file=status_file.empty()?
+            std::filesystem::path("logs/events.log"):status_file.parent_path()/"events.log";
+        event_log_file=std::filesystem::absolute(event_log_file);
+        std::filesystem::create_directories(event_log_file.parent_path());
+        events.open(event_log_file,std::ios::app);
+        if(!events) throw std::runtime_error("cannot open event log: "+event_log_file.string());
+        bool event_log_error_reported{};
+        auto log=[&](const std::string& message) {
+            const auto line=std::to_string(unix_ms())+" "+message;
+            std::cout<<line<<std::endl;
+            events<<line<<std::endl;
+            if(!events && !event_log_error_reported) {
+                std::cerr<<"Event log write failed: "<<event_log_file.string()<<std::endl;
+                event_log_error_reported=true;
+            }
+        };
+        log("runtime_start "+nlohmann::json{{"executable",std::filesystem::absolute(argv[0]).string()},
+            {"build",__DATE__ " " __TIME__},{"pid",GetCurrentProcessId()},
+            {"event_log",event_log_file.string()},{"position_filter",position_filter_parameters}}.dump());
+        std::unique_ptr<c2::rdr::CoordinateRecorder> recorder;
+        if(!rdr_record_file.empty()) recorder=std::make_unique<c2::rdr::CoordinateRecorder>(
+            rdr_record_file,rdr_record_seconds,nlohmann::json{
+                {"executable",std::filesystem::absolute(argv[0]).string()},
+                {"rdr_peer",endpoint_json({rdr_ip,uint16_t(rdr_port)})},
+                {"filter",position_filter_parameters}});
+        bool recording_finished_logged{};
         std::filesystem::file_time_type installation_seen{};
-        if (!installation_file.empty()) {
-            installation_file = std::filesystem::absolute(installation_file);
-            installation = load_installation_config(installation_file);
+        if (installation_file.empty()) {
+            standalone_installation = true;
+            installation_file = std::filesystem::absolute(argv[0]).parent_path() / "installation.json";
+        }
+        installation = load_installation_settings(installation_file, standalone_installation);
+        if (std::filesystem::exists(installation_file)) {
             installation_seen = std::filesystem::last_write_time(installation_file);
         }
         std::signal(SIGINT, quit); std::signal(SIGTERM, quit);
@@ -206,20 +280,16 @@ int main(int argc, char** argv) {
         std::cout << "LIVE ECS / configured FCS and RDR peers / manual Big Endian codecs\n"
                   << "Network: " << network.dump() << '\n'
                   << "GUI FCS-1 = " << config.peer.address << ':' << config.peer.port << '\n'
-                  << "Installation display config: " << (installation_file.empty()?"common origin defaults":installation_file.string()) << '\n'
+                  << "Installation settings: " << installation_file.string() << '\n'
                   << "Position edits update map and FCS assignment coordinates; reassign after edits.\n"
-                  << "Assign sends EF03; Fire sends EF05 built-in demo; Cancel sends EF04 OFF.\n"
+                  << "Assign sends EF03; Active sends EF05 built-in demo; Cancel sends EF04 OFF.\n"
                   << "FCS and RDR connect automatically; RDR report/start require commands.\n"
                   << "RDR controls: rdr connect / rdr report on / rdr start / rdr stop\n"
                   << "Read-only world XYZ monitor: rdr live on / rdr live off (200 ms)\n"
+                  << "Target position Kalman=" << (position_filter_config.enabled?"on":"off")
+                  << " measurement_stddev_m=" << position_filter_config.measurement_stddev_m
+                  << " process_stddev_m_sqrt_s=" << position_filter_config.process_stddev_m_sqrt_s << '\n'
                   << "Ctrl+C closes this station.\n" << std::flush;
-        std::ofstream events;
-        if (!status_file.empty()) events.open(status_file.parent_path()/"events.log",std::ios::app);
-        auto log=[&](const std::string& message) {
-            auto line=std::to_string(unix_ms())+" "+message;
-            std::cout<<line<<std::endl;
-            if(events) events<<line<<std::endl;
-        };
         std::unique_ptr<RdrControl<c2::rdr::Client>> real_control;
         if (real_rdr) {
 
@@ -248,27 +318,29 @@ int main(int argc, char** argv) {
             default: return gui::Result::device_rejected;
             }
         };
-        uint32_t target_id{}, fire{}, frame_sequence{};
+        uint32_t target_id{}, active{}, frame_sequence{};
         uint64_t assigned_rdr_generation{};
         AssignmentHealth health; auto& assignment=health.state;
         unsigned logged_state=0, logged_reason=0;
         double commanded_pan{}, commanded_tilt{};
-        Target assigned_target{};
+        AssignmentPositionGuard position_guard(c2::rdr::gui_noise_axes(
+            position_filter_config.measurement_stddev_xyz_m,position_filter_config.measurement_stddev_m));
         bool demo_requested{}, demo_seen{};
         auto invalidate_installation_alignment=[&]() {
             if (!target_id) return;
             health.fail(gui::Result::target_changed);
-            fire=0;demo_requested=demo_seen=false;
+            active=0;demo_requested=demo_seen=false;
             log("Installation positions changed: existing alignment invalid; reassign required");
         };
         Clock::time_point next_poll{}, next_log{}, move_deadline{}, next_installation_check{}, next_rdr_retry{};
         bool installation_missing{};
         ConsoleInput console(headless);
-        c2::rdr::WorldTargetStore world_targets;
         bool rdr_live{};
         Clock::time_point next_rdr_live{};
         std::cout << nlohmann::json{{"ready",true},{"runtime","C++"},{"network",network},{"rdr_protocol","edde24"},{"fcs_protocol","effe"}}.dump()<<std::endl;
         while (!quitting && (stop_file.empty() || !std::filesystem::exists(stop_file))) {
+            enum class RdrReply { none, state, targets };
+            auto rdr_reply=RdrReply::none;
             if(auto line=console.next()) {
                 try {
                     std::istringstream input(*line);std::string device,command,arg;input>>device>>command;
@@ -299,9 +371,7 @@ int main(int argc, char** argv) {
                         else if(command=="report") {input>>arg;if(arg!="on"&&arg!="off")throw std::invalid_argument("report on|off");real_rdr->command(0xED03,arg=="on");}
                         else if(command=="exclude"||command=="resume") {input>>arg;auto id=parse_port(arg);real_rdr->command(0xED04,id,command=="resume");}
                         else if(command!="status"&&command!="targets")throw std::invalid_argument("unknown RDR command");
-                        auto state=rdr_json(real_rdr->snapshot(),
-                            {-installation.rdr_position[1],installation.rdr_position[0],installation.rdr_position[2]},world_targets);
-                        std::cout<<(command=="targets"?state["targets"]:state).dump()<<std::endl;
+                        rdr_reply=command=="targets"?RdrReply::targets:RdrReply::state;
                     } else if(device=="fcs" && client) {
                         std::optional<fcs::Packet> response;
                         if(command=="connect")response=client->connect();
@@ -324,7 +394,7 @@ int main(int argc, char** argv) {
                     } else throw std::invalid_argument("unknown device command");
                 } catch(const std::exception& e) {std::cout<<nlohmann::json{{"rejected",e.what()}}.dump()<<std::endl;}
             }
-            if(!headless&&console.ended())break;
+            if(!headless&&console.ended()&&rdr_reply==RdrReply::none)break;
             if(client&&laser_deadline!=Clock::time_point{}&&Clock::now()>=laser_deadline) {(void)client->laser(false);laser_deadline=Clock::time_point{};}
             if (!c2_ipc_healthy(ipc) || !c2_ipc_healthy(rdr_control)) throw std::runtime_error("IPC stopped");
             if (!installation_file.empty() && Clock::now() >= next_installation_check) {
@@ -338,7 +408,7 @@ int main(int argc, char** argv) {
                     installation_missing = false;
                     installation_seen = modified;
                     try {
-                        auto updated = load_installation_config(installation_file);
+                        auto updated = load_installation_settings(installation_file);
                         if(updated.rdr_position!=installation.rdr_position || updated.eff_position!=installation.eff_position)
                             invalidate_installation_alignment();
                         installation = std::move(updated);
@@ -379,35 +449,65 @@ int main(int argc, char** argv) {
                 std::cout<<c2::rdr::live_diagnostics(rdr_state,rdr_origin,unix_ms()).dump()<<std::endl;
                 next_rdr_live=Clock::now()+std::chrono::milliseconds(200);
             }
-            auto corrected_targets=world_targets.update(rdr_state,rdr_origin);
-            auto observation = observation_snapshot(rdr_state,corrected_targets);
+            auto corrected_targets=c2::rdr::correct_targets(rdr_state,rdr_origin);
+            // Domain coordinates are computed before either consumer runs.
+            // GUI serialization never feeds coordinates back into control.
+            if (!real_control->operating(rdr_state)) position_filter.reset();
+            auto filtered_targets=position_filter.update(rdr_state,rdr_origin);
+            auto observation = observation_snapshot(rdr_state,filtered_targets);
             bool current = state.connected && state.status &&
                 Clock::now()-state.status_received_at < std::chrono::seconds(2);
             uint16_t flags = current ? state.status->flags : 0;
             bool ready = current && !(flags&16) && state.status->azimuth != -32768 && state.status->elevation != -32768;
             auto assigned_now = std::find_if(observation.targets.begin(), observation.targets.end(),
                 [&](const Target& t) { return t.id == target_id; });
-            bool target_current = target_id && assigned_now != observation.targets.end() &&
-                std::abs(assigned_now->east-assigned_target.east)<.01 &&
-                std::abs(assigned_now->north-assigned_target.north)<.01 &&
-                std::abs(assigned_now->up-assigned_target.up)<.01;
+            const bool target_consistent=target_id && assigned_now!=observation.targets.end() &&
+                position_guard.consistent({assigned_now->east,assigned_now->north,assigned_now->up},
+                    rdr_state.targets.at(uint16_t(assigned_now->id)).seen);
             bool aligned=current && std::abs(state.status->azimuth-commanded_pan)<=1 &&
                 std::abs(state.status->elevation-commanded_tilt)<=1;
             if (real_rdr && target_id && observation.generation!=assigned_rdr_generation)
                 health.fail(gui::Result::target_changed);
-            health.update(current,ready,assigned_now!=observation.targets.end(),target_current,
+            health.update(current,ready,assigned_now!=observation.targets.end(),target_consistent,
                 aligned,(flags&2)!=0,demo_requested,Clock::now()>move_deadline);
+            auto assignment_details=[&](uint32_t inspected_target) {
+                const bool diagnostic_aligned=current && std::abs(state.status->azimuth-commanded_pan)<=1 &&
+                    std::abs(state.status->elevation-commanded_tilt)<=1;
+                nlohmann::json detail={{"target",inspected_target},{"fcs_connected",state.connected},
+                    {"status_current",current},{"device_ready",ready},{"flags",flags},
+                    {"status_age_ms",state.status?std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-state.status_received_at).count():-1},
+                    {"rdr_connected",observation.connected},{"rdr_reporting",observation.streaming},
+                    {"rdr_operating",observation.scanning},{"rdr_generation",observation.generation},
+                    {"assigned_generation",assigned_rdr_generation},{"aligned",diagnostic_aligned},
+                    {"commanded_pan",commanded_pan},{"commanded_tilt",commanded_tilt},
+                    {"actual_pan",nullptr},{"actual_tilt",nullptr},
+                    {"filtered_xyz",nullptr},{"reference_xyz",nullptr},{"delta_xyz",nullptr},
+                    {"tolerance_xyz_m",position_guard.tolerance()},{"outside_samples",position_guard.outside_samples()}};
+                if(state.status) {detail["actual_pan"]=state.status->azimuth;detail["actual_tilt"]=state.status->elevation;}
+                const auto now=std::find_if(observation.targets.begin(),observation.targets.end(),
+                    [&](const Target& t){return t.id==inspected_target;});
+                detail["target_present"]=now!=observation.targets.end();
+                if(now!=observation.targets.end()) detail["filtered_xyz"]={now->east,now->north,now->up};
+                if(inspected_target==target_id && position_guard.reference()) {
+                    const auto& ref=*position_guard.reference();
+                    detail["reference_xyz"]={ref.east,ref.north,ref.up};
+                    if(now!=observation.targets.end())
+                        detail["delta_xyz"]={now->east-ref.east,now->north-ref.north,now->up-ref.up};
+                }
+                return detail.dump();
+            };
             if(logged_state!=assignment || logged_reason!=unsigned(health.reason)) {
-                log("assignment="+std::to_string(assignment)+" reason="+std::to_string(unsigned(health.reason))+
+                log("assignment="+std::to_string(assignment)+" reason="+std::to_string(unsigned(health.reason))+" reason_name="+result_name(health.reason)+
                     " target="+std::to_string(target_id)+" flags="+std::to_string(flags)+
                     " status_age_ms="+std::to_string(state.status?std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-state.status_received_at).count():-1)+
                     " target_present="+std::to_string(assigned_now!=observation.targets.end())+
-                    " target_unchanged="+std::to_string(target_current)+" aligned="+std::to_string(aligned));
+                    " target_consistent="+std::to_string(target_consistent)+" aligned="+std::to_string(aligned)+
+                    " detail="+assignment_details(target_id));
                 logged_state=assignment; logged_reason=unsigned(health.reason);
             }
             if (demo_requested && current) {
                 if (flags&8) demo_seen=true;
-                if (demo_seen && ready && assignment==2 && !(flags&14)) { fire=1; demo_requested=false; }
+                if (demo_seen && ready && assignment==2 && !(flags&14)) { active=1; demo_requested=false; }
             }
             gui::PipeCommand request; uint64_t ticket;
             void* request_ipc=ipc;
@@ -433,22 +533,31 @@ int main(int argc, char** argv) {
                             auto& position=rdr_position?installation.rdr_position:installation.eff_position;
                             // GUI (right,forward,up) -> installation (forward,left,up).
                             const std::array<double,3> updated{request.position_y,-double(request.position_x),request.position_z};
+                            auto saved = installation;
+                            (rdr_position?saved.rdr_position:saved.eff_position) = updated;
+                            save_installation_settings(installation_file, saved, standalone_installation);
+                            std::error_code timestamp_error;
+                            installation_seen = std::filesystem::last_write_time(installation_file, timestamp_error);
+                            installation_missing = false;
                             if (position!=updated) {
                                 invalidate_installation_alignment();
                                 position=updated;
                                 if (rdr_position) {
-                                    corrected_targets=world_targets.update(rdr_state,
+                                    corrected_targets=c2::rdr::correct_targets(rdr_state,
                                         {-position[1],position[0],position[2]});
-                                    observation=observation_snapshot(rdr_state,corrected_targets);
+                                    filtered_targets=position_filter.update(rdr_state,
+                                        {-position[1],position[0],position[2]});
+                                    observation=observation_snapshot(rdr_state,filtered_targets);
                                 }
                             }
-                            log(std::string("GUI position updated: ")+(rdr_position?"RDR":"FCS")+
+                            log(std::string("GUI position saved: ")+(rdr_position?"RDR":"FCS")+
                                 " XYZ="+std::to_string(request.position_x)+","+
                                 std::to_string(request.position_y)+","+std::to_string(request.position_z));
                         }
                     }
                     else if (request.command == 6 && real_control) {
                         result=static_cast<gui::Result>(real_control->set_operating(request).result);
+                        if (!real_control->operating(rdr_state)) position_filter.reset();
                     }
                     else if (request.fcs_id != 1 || request.rdr_id != 1) result=gui::Result::invalid_request;
                     else if (request.command == 0) { result=health.reason; }
@@ -465,7 +574,7 @@ int main(int argc, char** argv) {
                         else if (found==observation.targets.end()) result=gui::Result::target_pending;
                         else if (target_id && (target_id!=request.target_id || assignment!=3 || demo_requested)) result=gui::Result::already_assigned;
                         else {
-                            // Use the same corrected installation point published to the GUI.
+                            // Consume the shared filtered world point before GUI serialization.
                             const double east=found->east+installation.eff_position[1];
                             const double north=found->north-installation.eff_position[0];
                             const double up=found->up-installation.eff_position[2];
@@ -477,26 +586,26 @@ int main(int argc, char** argv) {
                                 " pan="+std::to_string(commanded_pan)+" tilt="+std::to_string(commanded_tilt));
                             auto reply=client->point(commanded_tilt,commanded_pan);
                             result=command_result("EF03",reply);
-                            if(result==gui::Result::success) { target_id=request.target_id; assigned_target=*found; assigned_rdr_generation=observation.generation; health.start(); fire=0; demo_requested=demo_seen=false; move_deadline=Clock::now()+std::chrono::seconds(60); next_poll={}; }
+                            if(result==gui::Result::success) { target_id=request.target_id; position_guard.start({found->east,found->north,found->up},rdr_state.targets.at(uint16_t(found->id)).seen); assigned_rdr_generation=observation.generation; health.start(); active=0; demo_requested=demo_seen=false; move_deadline=Clock::now()+std::chrono::seconds(60); next_poll={}; }
                         }
                     } else if (request.command == 2) {
                         if (!target_id) result=gui::Result::not_assigned;
                         else {
                             auto reply=client->laser(false);
                             result=command_result("EF04_OFF",reply);
-                            if(result==gui::Result::success) { target_id=fire=0; health.reset(); demo_requested=demo_seen=false; next_poll={}; }
+                            if(result==gui::Result::success) { target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; next_poll={}; }
                         }
                     } else if (request.command == 3) {
                         if (!target_id || target_id!=request.target_id) result=gui::Result::not_assigned;
                         else if (assignment!=2) result=health.reason!=gui::Result::success?health.reason:gui::Result::alignment_required;
                         else if (!current) result=gui::Result::status_pending;
                         else if (!ready) result=gui::Result::device_fault;
-                        else if (!target_current) result=gui::Result::target_pending;
+                        else if (!target_consistent) result=gui::Result::target_pending;
                         else if ((flags&10) || demo_requested) result=gui::Result::device_busy;
                         else {
                             auto reply=client->demo();
                             result=command_result("EF05",reply);
-                            if(result==gui::Result::success) { fire=0; demo_requested=true; demo_seen=false; next_poll={}; }
+                            if(result==gui::Result::success) { active=0; demo_requested=true; demo_seen=false; next_poll={}; }
                             else if(!reply) { demo_requested=true; health.fail(gui::Result::response_timeout); }
                         }
                     } else result=gui::Result::not_supported;
@@ -506,7 +615,7 @@ int main(int argc, char** argv) {
                     result=gui::Result::device_error; log(std::string("device_exception ")+error.what());
                 }
                 response.result=uint32_t(result); response.target_id=target_id;
-                response.assignment=assignment; response.fire=fire; response.connected=state.connected;
+                response.assignment=assignment; response.active=active; response.connected=state.connected;
                 if(request.command==5 || request.command==6) response.connected=real_rdr->snapshot().connected;
                 // Upstream GUI accepts result 0..6 and assignment 0..3 only.
                 // Keep detailed reasons internally and in events.log.
@@ -518,7 +627,11 @@ int main(int argc, char** argv) {
                          result==gui::Result::device_fault)?6:2;
                 }
                 c2_ipc_reply(request_ipc,&response,ticket);
-                if(request.command) log("GUI command="+std::to_string(request.command)+" result="+std::to_string(response.result)+" target="+std::to_string(target_id));
+                if(request.command) log("GUI command="+std::to_string(request.command)+
+                    " request_id="+std::to_string(request.request_id)+" result="+std::to_string(response.result)+
+                    " internal_result="+std::to_string(unsigned(result))+" reason_name="+result_name(result)+
+                    " requested_target="+std::to_string(request.target_id)+" target="+std::to_string(target_id)+
+                    " assignment="+std::to_string(assignment)+" detail="+assignment_details(request.target_id));
                 }
             }
             gui::Frame frame; frame.header.sequence=++frame_sequence; frame.header.timestamp_ms=unix_ms();
@@ -537,11 +650,20 @@ int main(int argc, char** argv) {
                 fcs_motor_to_gui_azimuth(state.status->azimuth) : 135;
             p.fcs.elevation=current && state.status->elevation!=-32768 ? float(state.status->elevation) : 0;
             if (real_control) {
-                // Display the latest observation for each ID, without the held-position cache.
-                // Read installation positions here so same-frame position edits are reflected.
-                const auto display_targets=c2::rdr::correct_targets(rdr_state,
-                    {-installation.rdr_position[1],installation.rdr_position[0],installation.rdr_position[2]});
-                real_control->populate(p,rdr_state,display_targets);
+                real_control->populate(p,rdr_state,filtered_targets);
+                if (rdr_reply!=RdrReply::none) {
+                    const auto reply=rdr_json(rdr_state,corrected_targets,filtered_targets);
+                    std::cout<<(rdr_reply==RdrReply::targets?reply.at("targets"):reply).dump()<<std::endl;
+                }
+                if(recorder) {
+                    recorder->append(rdr_state,
+                        {-installation.rdr_position[1],installation.rdr_position[0],installation.rdr_position[2]},
+                        filtered_targets,real_control->operating(rdr_state),c2::rdr::seconds(),unix_ms());
+                    if(recorder->finished() && !recording_finished_logged) {
+                        log("RDR coordinate recording finished: "+rdr_record_file.string());
+                        recording_finished_logged=true;
+                    }
+                }
                 // Legacy GUI does not recognize unknown-angle sentinels.
                 if(p.rdr.azimuth==-32768)p.rdr.azimuth=135;
                 if(p.rdr.elevation==-32768)p.rdr.elevation=0;
@@ -569,6 +691,7 @@ int main(int argc, char** argv) {
                         << ",\"display_positions\":{\"rdr\":[" << installation.rdr_position[0] << ',' << installation.rdr_position[1] << ',' << installation.rdr_position[2]
                         << "],\"eff\":[" << installation.eff_position[0] << ',' << installation.eff_position[1] << ',' << installation.eff_position[2] << "]}"
                         << ",\"network\":" << network.dump()
+                        << ",\"gui_kalman\":" << position_filter_parameters.dump()
                         << ",\"rdr_received_datagrams\":" << real_rdr->transport_stats().received_datagrams
                         << ",\"timestamp_ms\":" << unix_ms() << "}";
                 }
@@ -586,12 +709,14 @@ int main(int argc, char** argv) {
             }
         }
         if(client && client->snapshot().connected) { try { (void)client->laser(false); } catch(...) {} }
+        log("runtime_stop graceful=1");
         c2_ipc_destroy(rdr_control); rdr_control=nullptr;
         c2_ipc_destroy(ipc); ipc=nullptr; if (client) client->stop();
         return 0;
     } catch(const std::exception& error) {
         if (rdr_control) c2_ipc_destroy(rdr_control);
         if (ipc) c2_ipc_destroy(ipc);
+        if(events) events<<unix_ms()<<" runtime_error "<<error.what()<<std::endl;
         std::cerr << "Live station error: " << error.what() << '\n'; return 1;
     }
 }

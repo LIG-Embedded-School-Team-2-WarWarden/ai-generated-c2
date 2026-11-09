@@ -81,12 +81,15 @@
     <ClCompile Include="Sources\main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Headers\assignment_position_guard.hpp" />
     <ClInclude Include="Headers\assignment_health.hpp" />
     <ClInclude Include="Headers\fcs_angles.hpp" />
     <ClInclude Include="Headers\installation_config.hpp" />
     <ClInclude Include="Headers\rdr_control.hpp" />
     <ClInclude Include="Headers\rdr_coordinates.hpp" />
     <ClInclude Include="Headers\rdr_live_diagnostics.hpp" />
+    <ClInclude Include="Headers\target_position_filter.hpp" />
+    <ClInclude Include="Headers\rdr_coordinate_recorder.hpp" />
   </ItemGroup>
   <ItemGroup />
   <ItemGroup>

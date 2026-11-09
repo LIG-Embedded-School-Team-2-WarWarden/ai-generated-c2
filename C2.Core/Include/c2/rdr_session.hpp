@@ -22,7 +22,7 @@ inline int signed_word(std::span<const uint8_t> p,unsigned n){const int v=word(p
 struct Target {
     uint16_t id{};
     double x{},y{},z{}; // Raw metres: mirrored X, up, forward; normalize X at world conversion.
-    double seen{}; // Last received DE03, only for the local receive timeout.
+    double seen{}; // Monotonic DE03 receive time: timeout and display sample identity.
     int pan{-32768},tilt{-32768}; // Observation pose, signed tenths of a degree.
     uint16_t detected{},track_state{}; // 0 LOST, 1 OBSERVED, 2 PREDICTED.
     uint8_t status{2};

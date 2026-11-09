@@ -3,6 +3,7 @@ import argparse
 import ctypes
 import json
 import mmap
+import math
 from pathlib import Path
 import queue
 import socket
@@ -45,6 +46,7 @@ class Gui:
             reply += part
         fields = struct.unpack('<10I', reply)
         assert fields[:4] == (0x50495045, 3, self.sequence, kind), fields
+        self.last_response = fields
         return fields[4]
 
     def frame(self):
@@ -147,6 +149,8 @@ class FcsBoard:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--console', type=Path, required=True)
+    parser.add_argument('--filtered', action='store_true')
+    parser.add_argument('--jitter', action='store_true')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     rdr, fcs = Board(), FcsBoard()
@@ -155,6 +159,13 @@ def main():
     try:
         with tempfile.TemporaryDirectory() as directory:
             config = json.loads((root / 'configs/team-demo.json').read_text(encoding='utf-8'))
+            # Exact coordinate/protocol contract; smoothing is tested separately.
+            config['rdr']['gui_kalman'] = {'enabled': args.filtered or args.jitter,
+                'measurement_stddev_m': 1., 'process_stddev_m_sqrt_s': .001}
+            if args.jitter:
+                config['rdr']['gui_kalman'].update({'measurement_stddev_m': .025,
+                    'process_stddev_m_sqrt_s': .03,
+                    'measurement_stddev_xyz_m': [.025, .018, .005]})
             # An old configuration must no longer disable GUI assignment.
             config['assignment_enabled'] = False
             # Existing deployments may still supply the retired ECS limits.
@@ -165,9 +176,13 @@ def main():
             config_path = Path(directory) / 'config.json'
             config_path.write_text(json.dumps(config), encoding='utf-8')
             suffix = '_test_' + uuid.uuid4().hex
-            process = subprocess.Popen([str(args.console.resolve()), '--config', str(config_path),
-                '--ipc-suffix', suffix],
-                cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            event_log = Path(directory) / ('logs/events.log' if args.jitter else 'events.log')
+            launch = [str(args.console.resolve()), '--config', str(config_path), '--ipc-suffix', suffix]
+            if not args.jitter:
+                launch += ['--event-log', str(event_log)]
+            process = subprocess.Popen(launch,
+                cwd=directory if args.jitter else root,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             output = queue.Queue()
 
@@ -224,6 +239,120 @@ def main():
             assert abs(struct.unpack_from('<f', frame, 52)[0] - 12.3) < .001
             target = next(t for t in target_records(frame) if t[0] == 7)
             assert all(abs(a-b)<1e-6 for a,b in zip(target[4:7], (.469,2.229,-.109)))
+            if args.jitter:
+                wait('fcs status', lambda value: value['confirmed'] and value['connected'])
+
+                def wait_assignment(expected, timeout=6):
+                    end = time.monotonic() + timeout
+                    while time.monotonic() < end:
+                        gui.command(0)
+                        if gui.last_response[7] == expected:
+                            return
+                        time.sleep(.05)
+                    raise AssertionError(('assignment', expected, gui.last_response))
+
+                assert gui.command(1, target=7) == 0
+                wait_assignment(2)
+                points = sum(packet[:2] == b'\xef\x03' for packet in fcs.wire)
+                initial = target[4:7]
+                # Keep centimetre-scale offsets long enough to exceed the old
+                # 1cm gate after filtering, including a reversal of the noise.
+                for dx in (.04, -.04):
+                    rdr.observations = [(7, (-(initial[0]+dx), initial[2]+.02,
+                                              initial[1]+.03), 0, 1800)]
+                    for _ in range(20):
+                        time.sleep(.06)
+                        gui.command(0)
+                        assert gui.last_response[7] == 2, gui.last_response
+                    displayed = next(t[4:7] for t in target_records(gui.frame()) if t[0] == 7)
+                    assert abs(displayed[0]-initial[0]) > .015, (initial, displayed)
+                assert sum(packet[:2] == b'\xef\x03' for packet in fcs.wire) == points
+                # A real, sustained displacement must still invalidate alignment.
+                moved = (7, (-(initial[0]+1), initial[2], initial[1]), 0, 1800)
+                rdr.observations = [moved]
+                wait_assignment(3)
+                assert sum(packet[:2] == b'\xef\x03' for packet in fcs.wire) == points
+                assert gui.command(2, target=7) == 0
+                # Reassignment starts a new reference; it does not inherit the
+                # preceding displacement confirmation or freeze GUI coordinates.
+                rdr.observations = []
+                time.sleep(.2)
+                assert gui.command(1, target=7) == 0
+                wait_assignment(2)
+                rdr.track_state = 0
+                rdr.observations = [moved]
+                gui.wait(lambda raw: valid_count(raw) == 0)
+                wait_assignment(1)  # Existing GUI maps waiting to adjusting.
+                assert gui.command(2, target=7) == 0
+                process.stdin.write('quit\n')
+                process.stdin.flush()
+                process.wait(timeout=8)
+                assert process.returncode == 0, process.stderr.read()
+                assert rdr.error is None and fcs.error is None
+                logged = event_log.read_text(encoding='utf-8')
+                assert 'runtime_start ' in logged and 'runtime_stop graceful=1' in logged
+                failures = [line for line in logged.splitlines()
+                            if 'assignment=3 reason=9 reason_name=target_changed' in line]
+                assert failures, logged
+                detail = json.loads(failures[-1].split(' detail=', 1)[1])
+                assert detail['outside_samples'] == 3 and detail['filtered_xyz'] is not None
+                assert detail['reference_xyz'] is not None and detail['delta_xyz'] is not None
+                assert all(abs(a-b) < 1e-12 for a,b in zip(detail['tolerance_xyz_m'], [.075, .054, .05]))
+                assert 'reason_name=target_pending' in logged
+                print('PASS: default persistent event log, readable failure reason and assignment diagnostic values')
+                print('PASS: live Kalman jitter retains assignment; sustained movement, reassignment and target loss; no automatic pointing')
+                return
+            if args.filtered:
+                wait('fcs status', lambda value: value['confirmed'] and value['connected'])
+                initial = target[4:7]
+                rdr.observations = [(7, (-4, 2, 5), 0, 1800)]
+                gui.wait(lambda raw: any(t[0] == 7 and t[9] and
+                    t[4] > initial[0] + .01 for t in target_records(raw)))
+                # Freeze observations so the independent GUI frame and command
+                # inspect one sample, without further convergence during IPC.
+                rdr.observations = []
+                time.sleep(.2)
+                frame = gui.frame()
+                filtered = next(t[4:7] for t in target_records(frame) if t[0] == 7)
+                assert initial[0] < filtered[0] < 4 - .01, (initial, filtered)
+                row = next(t for t in ask('rdr targets') if t['id'] == 7)
+                assert row['world_xyz'] == [4, 5, 2]  # Latest unfiltered diagnostics.
+                assert all(abs(a-b) < 1e-6 for a,b in zip(row['gui_xyz'], filtered))
+
+                def check_point(world, origin=(0, 0, 0)):
+                    east, north, up = (a-b for a,b in zip(world, origin))
+                    expected = (round(math.degrees(math.atan2(up, math.hypot(east, north))) * 10),
+                        round((180 + math.degrees(math.atan2(east, north))) * 10))
+                    before = sum(packet[:2] == b'\xef\x03' for packet in fcs.wire)
+                    assert gui.command(1, target=7) == 0
+                    assert sum(packet[:2] == b'\xef\x03' for packet in fcs.wire) == before + 1
+                    assert (fcs.elevation, fcs.azimuth) == expected, (filtered, expected,
+                        fcs.elevation, fcs.azimuth)
+                    assert gui.command(2, target=7) == 0
+
+                check_point(filtered)
+                # Same-frame installation edits reset the domain filter; both
+                # adapters see the new world point, including FCS displacement.
+                assert gui.command(5, rdr=1, fcs=0, xyz=(1, 2, .5)) == 0
+                assert gui.command(5, rdr=0, fcs=1, xyz=(-.5, 1, .25)) == 0
+                frame = gui.wait(lambda raw: any(t[0] == 7 and t[4:7] == (5, 7, 2.5)
+                    for t in target_records(raw)))
+                check_point((5, 7, 2.5), (-.5, 1, .25))
+                # The shared filter must never keep an expired target usable.
+                gui.wait(lambda raw: valid_count(raw) == 0, timeout=5)
+                before = len(fcs.wire)
+                assert gui.command(1, target=7) == 2
+                assert not any(packet[:2] == b'\xef\x03' for packet in fcs.wire[before:])
+                process.stdin.write('quit\n')
+                process.stdin.flush()
+                process.wait(timeout=8)
+                assert process.returncode == 0, process.stderr.read()
+                assert rdr.error is None and fcs.error is None
+                logged = event_log.read_text(encoding='utf-8')
+                assert 'internal_result=8 reason_name=target_pending requested_target=7' in logged
+                assert 'runtime_start ' in logged and 'runtime_stop graceful=1' in logged
+                print('PASS: shared filtered coordinates -> GUI and FCS; latest same-ID point, installation edits, expiry; loopback only')
+                return
             # Current status pose changes independently of the sample pose.
             rdr.pan, rdr.tilt = 2700, 400
             frame = gui.wait(lambda raw: abs(struct.unpack_from('<f', raw, 48)[0] - 225) < .001
@@ -279,15 +408,14 @@ def main():
                 assert gui.command(1, target=19) == 0
                 assert (fcs.elevation, fcs.azimuth) == wire_angles
                 assert gui.command(2, target=19) == 0
-                # Display the latest measurement for the same ID; the held
-                # position used by existing commands remains independent.
+                # GUI and assignment both consume the latest point for the same ID.
                 rdr.observations = [original_observations[0], (19, (-4,2,5), 0, 1800)]
                 wait('rdr targets', lambda rows: any(t['id']==19 and
                     t['gui_xyz']==[4,5,2] for t in rows))
                 frame = gui.wait(lambda raw: any(t[0]==19 and t[9] and
                     all(abs(a-b)<1e-5 for a,b in zip(t[4:7],(4,5,2))) for t in target_records(raw)))
                 assert gui.command(1,target=19)==0
-                assert (fcs.elevation,fcs.azimuth)==wire_angles
+                assert (fcs.elevation,fcs.azimuth)==(173, 2187)
                 assert gui.command(2,target=19)==0
             rdr.track_state = 0
             gui.wait(lambda raw: valid_count(raw) == 0)

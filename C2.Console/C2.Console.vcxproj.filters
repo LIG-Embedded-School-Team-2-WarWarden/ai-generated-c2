@@ -6,6 +6,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Headers\assignment_position_guard.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="Headers\assignment_health.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -28,6 +31,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Headers\rdr_live_diagnostics.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Headers\target_position_filter.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Headers\rdr_coordinate_recorder.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

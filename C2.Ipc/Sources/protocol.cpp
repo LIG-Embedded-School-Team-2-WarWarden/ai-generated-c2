@@ -60,7 +60,7 @@ template<class IO> void visit(IO& io, PipeCommand& v) {
 }
 template<class IO> void visit(IO& io, PipeResponse& v) {
     fields(io, v.magic, v.version, v.request_id, v.command, v.result, v.fcs_id,
-           v.target_id, v.assignment, v.fire, v.connected);
+           v.target_id, v.assignment, v.active, v.connected);
 }
 template<class T> auto write(T value) { Writer io; visit(io, value); return io.bytes; }
 template<class T> bool read(std::span<const std::uint8_t> bytes, std::size_t size, T& value) {
@@ -111,7 +111,7 @@ bool deserialize(std::span<const std::uint8_t> bytes, PipeCommand& value) {
 bool deserialize(std::span<const std::uint8_t> bytes, PipeResponse& value) {
     PipeResponse v;
     if (!read(bytes, response_size, v) || v.magic != pipe_magic || v.version != pipe_version ||
-        v.result > 14 || v.assignment > 4 || v.fire > 1 || v.connected > 1) return false;
+        v.result > 14 || v.assignment > 4 || v.active > 1 || v.connected > 1) return false;
     value = v; return true;
 }
 } // namespace c2::ipc

@@ -60,27 +60,4 @@ inline std::vector<CorrectedTarget> correct_targets(const State& state, BasePoin
     std::stable_sort(result.begin(),result.end(),[](const auto& a,const auto& b){return a.valid>b.valid;});
     return result;
 }
-// Fixed-target mode: capture world position once per continuous target lifetime.
-// This deliberately does not track motion of an already captured target ID.
-class WorldTargetStore {
-    std::map<uint16_t,CorrectedTarget> captured_;
-    uint64_t generation_{};
-    BasePoint origin_{};
-public:
-    std::vector<CorrectedTarget> update(const State& state, BasePoint origin) {
-        if (generation_!=state.generation || origin.east!=origin_.east ||
-            origin.north!=origin_.north || origin.up!=origin_.up ||
-            !state.connected || !state.reporting || state.mode!=2) captured_.clear();
-        generation_=state.generation;origin_=origin;
-        auto targets=correct_targets(state,origin);
-        for(auto it=captured_.begin();it!=captured_.end();)
-            if(!state.targets.contains(it->first))it=captured_.erase(it);else ++it;
-        for(auto& target:targets) {
-            if(!target.valid) { captured_.erase(target.id);continue; }
-            auto [it,inserted]=captured_.try_emplace(target.id,target);
-            target=it->second;
-        }
-        return targets;
-    }
-};
 } // namespace c2::rdr

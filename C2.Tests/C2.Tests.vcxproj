@@ -80,9 +80,12 @@
     <ClCompile Include="Sources\fcs_client.cpp">
       <PreprocessorDefinitions>main=fcs_client_entry;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <ClCompile Include="Sources\assignment_position_guard.cpp" />
     <ClCompile Include="Sources\main.cpp" />
     <ClCompile Include="Sources\gui_v3.cpp" />
     <ClCompile Include="Sources\rdr_live_diagnostics.cpp" />
+    <ClCompile Include="Sources\gui_position_filter.cpp" />
+    <ClCompile Include="Sources\gui_filter_replay.cpp" />
     <ClCompile Include="Sources\rdr_icd_contract.cpp">
       <PreprocessorDefinitions>main=rdr_icd_contract_entry;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>

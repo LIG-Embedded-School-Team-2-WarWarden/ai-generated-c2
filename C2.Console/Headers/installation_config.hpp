@@ -7,6 +7,9 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+
+#include <windows.h>
 
 #include <nlohmann/json.hpp>
 
@@ -15,7 +18,7 @@
 // PAN/TILT by sensor_to_base; translate that result, then subtract FCS position.
 struct InstallationConfig {
     std::array<double, 3> rdr_position{}, eff_position{};
-    std::string observer_id, effector_id;
+    std::string observer_id{"RDR-1"}, effector_id{"FCS-1"};
 };
 
 namespace installation_config_detail {
@@ -92,5 +95,59 @@ inline InstallationConfig load_installation_config(const std::filesystem::path& 
     } catch (const nlohmann::json::exception& error) {
         throw std::invalid_argument("Invalid installation config '" + path.string() +
                                     "': " + error.what());
+    }
+}
+
+// Runtime settings share the --config document without changing its network keys.
+inline nlohmann::json read_installation_settings_document(
+    const std::filesystem::path& path, bool allow_missing = false) {
+    if (allow_missing && !std::filesystem::exists(path)) return nlohmann::json::object();
+    std::ifstream input(path);
+    if (!input) throw std::runtime_error("Cannot open settings: " + path.string());
+    auto document = nlohmann::json::parse(input);
+    if (!document.is_object()) throw std::invalid_argument("Settings must be a JSON object");
+    return document;
+}
+
+inline InstallationConfig load_installation_settings(
+    const std::filesystem::path& path, bool allow_missing = false) {
+    const auto document = read_installation_settings_document(path, allow_missing);
+    return document.contains("installation") ?
+        parse_installation_config(document.at("installation")) : InstallationConfig{};
+}
+
+inline void save_installation_settings(const std::filesystem::path& path,
+                                      const InstallationConfig& value,
+                                      bool allow_missing = false) {
+    auto document = read_installation_settings_document(path, allow_missing);
+    auto settings = document.value("installation", nlohmann::json::object());
+    if (document.contains("installation")) (void)parse_installation_config(settings);
+    settings["observer"] = value.observer_id;
+    settings["effector"] = value.effector_id;
+    auto& devices = settings["devices"];
+    devices[value.observer_id]["role"] = "OBS";
+    devices[value.observer_id]["position"] = value.rdr_position;
+    devices[value.effector_id]["role"] = "EFF";
+    devices[value.effector_id]["position"] = value.eff_position;
+    (void)parse_installation_config(settings);
+    document["installation"] = std::move(settings);
+
+    // Replace only after a complete write; a failed save keeps the old file.
+    auto temporary = path;
+    temporary += L".tmp." + std::to_wstring(GetCurrentProcessId());
+    try {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) throw std::runtime_error("Cannot create settings temporary file: " + temporary.string());
+        output << document.dump(2) << '\n';
+        output.flush();
+        if (!output) throw std::runtime_error("Cannot write settings: " + temporary.string());
+        output.close();
+        if (!output) throw std::runtime_error("Cannot close settings: " + temporary.string());
+        if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            throw std::system_error(GetLastError(), std::system_category(), "Cannot replace settings");
+    } catch (...) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw;
     }
 }
