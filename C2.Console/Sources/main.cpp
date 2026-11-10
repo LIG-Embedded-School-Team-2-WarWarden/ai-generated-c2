@@ -333,6 +333,14 @@ int main(int argc, char** argv) {
             log("Installation positions changed: existing alignment invalid; reassign required");
         };
         Clock::time_point next_poll{}, next_log{}, move_deadline{}, next_installation_check{}, next_rdr_retry{};
+        Clock::time_point last_assignment_cancel{};
+        Clock::time_point last_fcs_status_sample{};
+        bool have_fcs_busy_sample{};
+        bool last_fcs_busy{};
+        const auto diagnostic_start = Clock::now();
+        const auto diagnostic_us = [diagnostic_start](Clock::time_point time) {
+            return std::chrono::duration_cast<std::chrono::microseconds>(time - diagnostic_start).count();
+        };
         bool installation_missing{};
         ConsoleInput console(headless);
         bool rdr_live{};
@@ -458,6 +466,20 @@ int main(int argc, char** argv) {
             bool current = state.connected && state.status &&
                 Clock::now()-state.status_received_at < std::chrono::seconds(2);
             uint16_t flags = current ? state.status->flags : 0;
+            if (!current) have_fcs_busy_sample = false;
+            if (current && (!have_fcs_busy_sample || state.status_received_at != last_fcs_status_sample)) {
+                const bool busy = (flags & 10) != 0;
+                if (!have_fcs_busy_sample || busy != last_fcs_busy) {
+                    log("FCS busy_observed="+std::to_string(busy)+
+                        " observation="+(have_fcs_busy_sample?"change":"initial")+
+                        " status_rx_us="+std::to_string(diagnostic_us(state.status_received_at))+
+                        " previous_status_rx_us="+std::to_string(have_fcs_busy_sample?
+                            diagnostic_us(last_fcs_status_sample):-1)+" flags="+std::to_string(flags));
+                }
+                last_fcs_status_sample = state.status_received_at;
+                last_fcs_busy = busy;
+                have_fcs_busy_sample = true;
+            }
             bool ready = current && !(flags&16) && state.status->azimuth != -32768 && state.status->elevation != -32768;
             auto assigned_now = std::find_if(observation.targets.begin(), observation.targets.end(),
                 [&](const Target& t) { return t.id == target_id; });
@@ -514,6 +536,14 @@ int main(int argc, char** argv) {
             bool has_request=c2_ipc_poll(ipc,&request,&ticket)!=0;
             if (!has_request) { request_ipc=rdr_control; has_request=c2_ipc_poll(rdr_control,&request,&ticket)!=0; }
             if (has_request) {
+                const auto request_received = Clock::now();
+                if (request.command == 1) {
+                    log("GUI assignment_received request_id="+std::to_string(request.request_id)+
+                        " requested_target="+std::to_string(request.target_id)+
+                        " request_rx_us="+std::to_string(diagnostic_us(request_received))+
+                        " status_rx_us="+std::to_string(state.status?diagnostic_us(state.status_received_at):-1)+
+                        " busy_observed="+(current?((flags&10)?"1":"0"):"unknown"));
+                }
                 gui::PipeResponse response;
                 response.request_id = request.request_id; response.command = request.command; response.fcs_id=1;
                 if (real_control && request.command>=10) {
@@ -561,6 +591,11 @@ int main(int argc, char** argv) {
                     }
                     else if (request.fcs_id != 1 || request.rdr_id != 1) result=gui::Result::invalid_request;
                     else if (request.command == 0) { result=health.reason; }
+                    else if (request.command == uint32_t(gui::Command::get_fcs_busy)) {
+                        if (!current || state.status_received_at < last_assignment_cancel)
+                            result=gui::Result::status_pending;
+                        else if (!ready) result=gui::Result::device_fault;
+                    }
                     else if (request.command == 4) result=request.target_id<=900?gui::Result::not_supported:gui::Result::invalid_request;
                     else if (request_ipc==rdr_control) result=gui::Result::not_supported;
                     else if (!client) result=gui::Result::not_supported;
@@ -593,7 +628,7 @@ int main(int argc, char** argv) {
                         else {
                             auto reply=client->laser(false);
                             result=command_result("EF04_OFF",reply);
-                            if(result==gui::Result::success) { target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; next_poll={}; }
+                            if(result==gui::Result::success) { target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; last_assignment_cancel=Clock::now(); next_poll={}; }
                         }
                     } else if (request.command == 3) {
                         if (!target_id || target_id!=request.target_id) result=gui::Result::not_assigned;
@@ -616,6 +651,8 @@ int main(int argc, char** argv) {
                 }
                 response.result=uint32_t(result); response.target_id=target_id;
                 response.assignment=assignment; response.active=active; response.connected=state.connected;
+                 if (request.command == uint32_t(gui::Command::get_fcs_busy))
+                     response.active=result==gui::Result::success && (flags&10)!=0;
                 if(request.command==5 || request.command==6) response.connected=real_rdr->snapshot().connected;
                 // Upstream GUI accepts result 0..6 and assignment 0..3 only.
                 // Keep detailed reasons internally and in events.log.
