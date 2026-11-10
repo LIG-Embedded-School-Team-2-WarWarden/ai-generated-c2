@@ -22,7 +22,8 @@ constexpr wchar_t pipe_path[] = L"\\\\.\\pipe\\ECS_NamedPipe";
 
 enum class Command : std::uint32_t {
     status, assign, cancel, active, set_rdr_elevation,
-    set_asset_position, set_rdr_operating
+    // A successful get_fcs_busy response reports busy in the active field.
+    set_asset_position, set_rdr_operating, get_fcs_busy
 };
 enum class Result : std::uint32_t {
     success, invalid_request, asset_unavailable, not_assigned,
