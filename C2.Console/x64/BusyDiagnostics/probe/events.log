@@ -1,0 +1,16 @@
+1794302426795 runtime_start {"build":"Nov 10 2026 18:18:01","event_log":"C:\\Users\\user\\Documents\\projects\\c2\\ai-generated-c2\\C2.Console\\x64\\BusyDiagnostics\\probe\\events.log","executable":"C:\\Users\\user\\Documents\\projects\\c2\\ai-generated-c2\\C2.Console\\x64\\BusyDiagnostics\\C2.Console.NoPdb.exe","pid":34592,"position_filter":{"adaptive_motion":false,"enabled":true,"measurement_stddev_m":0.05,"measurement_stddev_xyz_m":[0.05,0.05,0.05],"model":"position_random_walk","motion_process_stddev_m_sqrt_s":0.08,"motion_process_stddev_xyz_m_sqrt_s":[0.08,0.08,0.08],"motion_trigger_sigma":2.5,"process_stddev_m_sqrt_s":0.1,"process_stddev_xyz_m_sqrt_s":[0.1,0.1,0.1]}}
+1794302426809 RDR mode=real24 ED/DE; FCS=active; automatic Connect/reconnect; explicit Report ON and Start required
+1794302426809 RDR operation=0 board_result=1
+1794302427024 FCS EF01 response_timeout
+1794302428235 FCS EF01 response_timeout
+1794302429467 FCS EF01 response_timeout
+1794302430714 FCS EF01 response_timeout
+1794302431952 FCS EF01 response_timeout
+1794302433214 FCS EF01 response_timeout
+1794302434470 FCS EF01 response_timeout
+1794302435678 FCS EF01 response_timeout
+1794302436908 FCS EF01 response_timeout
+1794302438115 FCS EF01 response_timeout
+1794302439331 FCS EF01 response_timeout
+1794302440549 FCS EF01 response_timeout
+1794302440900 runtime_stop graceful=1

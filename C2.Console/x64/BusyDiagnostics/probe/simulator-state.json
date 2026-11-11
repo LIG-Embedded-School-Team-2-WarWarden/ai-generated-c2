@@ -1,0 +1,29 @@
+{
+  "scenario": "normal",
+  "target_count": 10,
+  "targets": null,
+  "rdr_world": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "rdr_connected": false,
+  "rdr_mode": 0,
+  "reporting": false,
+  "rdr_pan_deg": 180.0,
+  "mock_fcs_enabled": true,
+  "fcs_elevation_deg": 12.3,
+  "fcs_azimuth_deg": 180.2,
+  "received": {
+    "RDR": 0,
+    "FCS": 0
+  },
+  "runner_pid": 47088,
+  "c2_pid": 34592,
+  "ipc_suffix": "_sim_f2added75d",
+  "fcs_mode": "dummy",
+  "fcs_peer": {
+    "ip": "127.0.0.1",
+    "port": 56505
+  }
+}

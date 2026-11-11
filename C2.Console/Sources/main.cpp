@@ -333,6 +333,31 @@ int main(int argc, char** argv) {
             log("Installation positions changed: existing alignment invalid; reassign required");
         };
         Clock::time_point next_poll{}, next_log{}, move_deadline{}, next_installation_check{}, next_rdr_retry{};
+        auto point_at_target=[&](const Target& target) {
+            const double east=target.east+installation.eff_position[1];
+            const double north=target.north-installation.eff_position[0];
+            const double up=target.up-installation.eff_position[2];
+            const auto angles=fcs_point_angles(east,north,up);
+            log("FCS point target="+std::to_string(target.id)+
+                " corrected_xyz="+std::to_string(target.east)+","+std::to_string(target.north)+","+std::to_string(target.up)+
+                " relative_xyz="+std::to_string(east)+","+std::to_string(north)+","+std::to_string(up)+
+                " pan="+std::to_string(angles.azimuth)+" tilt="+std::to_string(angles.elevation));
+            const auto result=command_result("EF03",client->point(angles.elevation,angles.azimuth));
+            if (result==gui::Result::success) {
+                commanded_pan=angles.azimuth;
+                commanded_tilt=angles.elevation;
+            }
+            return result;
+        };
+        Clock::time_point last_assignment_cancel{};
+        Clock::time_point last_fcs_status_sample{};
+        Clock::time_point last_tracking_status_sample{};
+        bool have_fcs_busy_sample{};
+        bool last_fcs_busy{};
+        const auto diagnostic_start = Clock::now();
+        const auto diagnostic_us = [diagnostic_start](Clock::time_point time) {
+            return std::chrono::duration_cast<std::chrono::microseconds>(time - diagnostic_start).count();
+        };
         bool installation_missing{};
         ConsoleInput console(headless);
         bool rdr_live{};
@@ -458,17 +483,33 @@ int main(int argc, char** argv) {
             bool current = state.connected && state.status &&
                 Clock::now()-state.status_received_at < std::chrono::seconds(2);
             uint16_t flags = current ? state.status->flags : 0;
+            if (!current) have_fcs_busy_sample = false;
+            if (current && (!have_fcs_busy_sample || state.status_received_at != last_fcs_status_sample)) {
+                const bool busy = (flags & 10) != 0;
+                if (!have_fcs_busy_sample || busy != last_fcs_busy) {
+                    log("FCS busy_observed="+std::to_string(busy)+
+                        " observation="+(have_fcs_busy_sample?"change":"initial")+
+                        " status_rx_us="+std::to_string(diagnostic_us(state.status_received_at))+
+                        " previous_status_rx_us="+std::to_string(have_fcs_busy_sample?
+                            diagnostic_us(last_fcs_status_sample):-1)+" flags="+std::to_string(flags));
+                }
+                last_fcs_status_sample = state.status_received_at;
+                last_fcs_busy = busy;
+                have_fcs_busy_sample = true;
+            }
             bool ready = current && !(flags&16) && state.status->azimuth != -32768 && state.status->elevation != -32768;
             auto assigned_now = std::find_if(observation.targets.begin(), observation.targets.end(),
                 [&](const Target& t) { return t.id == target_id; });
-            const bool target_consistent=target_id && assigned_now!=observation.targets.end() &&
+            const bool target_present=target_id && assigned_now!=observation.targets.end();
+            const auto tracking_target=target_present?std::optional<Target>{*assigned_now}:std::nullopt;
+            const bool target_consistent=target_present &&
                 position_guard.consistent({assigned_now->east,assigned_now->north,assigned_now->up},
                     rdr_state.targets.at(uint16_t(assigned_now->id)).seen);
             bool aligned=current && std::abs(state.status->azimuth-commanded_pan)<=1 &&
                 std::abs(state.status->elevation-commanded_tilt)<=1;
             if (real_rdr && target_id && observation.generation!=assigned_rdr_generation)
                 health.fail(gui::Result::target_changed);
-            health.update(current,ready,assigned_now!=observation.targets.end(),target_consistent,
+            health.update(current,ready,target_present,true,
                 aligned,(flags&2)!=0,demo_requested,Clock::now()>move_deadline);
             auto assignment_details=[&](uint32_t inspected_target) {
                 const bool diagnostic_aligned=current && std::abs(state.status->azimuth-commanded_pan)<=1 &&
@@ -514,6 +555,14 @@ int main(int argc, char** argv) {
             bool has_request=c2_ipc_poll(ipc,&request,&ticket)!=0;
             if (!has_request) { request_ipc=rdr_control; has_request=c2_ipc_poll(rdr_control,&request,&ticket)!=0; }
             if (has_request) {
+                const auto request_received = Clock::now();
+                if (request.command == 1) {
+                    log("GUI assignment_received request_id="+std::to_string(request.request_id)+
+                        " requested_target="+std::to_string(request.target_id)+
+                        " request_rx_us="+std::to_string(diagnostic_us(request_received))+
+                        " status_rx_us="+std::to_string(state.status?diagnostic_us(state.status_received_at):-1)+
+                        " busy_observed="+(current?((flags&10)?"1":"0"):"unknown"));
+                }
                 gui::PipeResponse response;
                 response.request_id = request.request_id; response.command = request.command; response.fcs_id=1;
                 if (real_control && request.command>=10) {
@@ -561,6 +610,11 @@ int main(int argc, char** argv) {
                     }
                     else if (request.fcs_id != 1 || request.rdr_id != 1) result=gui::Result::invalid_request;
                     else if (request.command == 0) { result=health.reason; }
+                    else if (request.command == uint32_t(gui::Command::get_fcs_busy)) {
+                        if (!current || state.status_received_at < last_assignment_cancel)
+                            result=gui::Result::status_pending;
+                        else if (!ready) result=gui::Result::device_fault;
+                    }
                     else if (request.command == 4) result=request.target_id<=900?gui::Result::not_supported:gui::Result::invalid_request;
                     else if (request_ipc==rdr_control) result=gui::Result::not_supported;
                     else if (!client) result=gui::Result::not_supported;
@@ -574,18 +628,7 @@ int main(int argc, char** argv) {
                         else if (found==observation.targets.end()) result=gui::Result::target_pending;
                         else if (target_id && (target_id!=request.target_id || assignment!=3 || demo_requested)) result=gui::Result::already_assigned;
                         else {
-                            // Consume the shared filtered world point before GUI serialization.
-                            const double east=found->east+installation.eff_position[1];
-                            const double north=found->north-installation.eff_position[0];
-                            const double up=found->up-installation.eff_position[2];
-                            const auto angles=fcs_point_angles(east,north,up);
-                            commanded_pan=angles.azimuth;commanded_tilt=angles.elevation;
-                            log("FCS point target="+std::to_string(request.target_id)+
-                                " corrected_xyz="+std::to_string(found->east)+","+std::to_string(found->north)+","+std::to_string(found->up)+
-                                " relative_xyz="+std::to_string(east)+","+std::to_string(north)+","+std::to_string(up)+
-                                " pan="+std::to_string(commanded_pan)+" tilt="+std::to_string(commanded_tilt));
-                            auto reply=client->point(commanded_tilt,commanded_pan);
-                            result=command_result("EF03",reply);
+                            result=point_at_target(*found);
                             if(result==gui::Result::success) { target_id=request.target_id; position_guard.start({found->east,found->north,found->up},rdr_state.targets.at(uint16_t(found->id)).seen); assigned_rdr_generation=observation.generation; health.start(); active=0; demo_requested=demo_seen=false; move_deadline=Clock::now()+std::chrono::seconds(60); next_poll={}; }
                         }
                     } else if (request.command == 2) {
@@ -593,7 +636,7 @@ int main(int argc, char** argv) {
                         else {
                             auto reply=client->laser(false);
                             result=command_result("EF04_OFF",reply);
-                            if(result==gui::Result::success) { target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; next_poll={}; }
+                            if(result==gui::Result::success) { target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; last_assignment_cancel=Clock::now(); next_poll={}; }
                         }
                     } else if (request.command == 3) {
                         if (!target_id || target_id!=request.target_id) result=gui::Result::not_assigned;
@@ -616,6 +659,8 @@ int main(int argc, char** argv) {
                 }
                 response.result=uint32_t(result); response.target_id=target_id;
                 response.assignment=assignment; response.active=active; response.connected=state.connected;
+                 if (request.command == uint32_t(gui::Command::get_fcs_busy))
+                     response.active=result==gui::Result::success && (flags&10)!=0;
                 if(request.command==5 || request.command==6) response.connected=real_rdr->snapshot().connected;
                 // Upstream GUI accepts result 0..6 and assignment 0..3 only.
                 // Keep detailed reasons internally and in events.log.
@@ -632,6 +677,29 @@ int main(int argc, char** argv) {
                     " internal_result="+std::to_string(unsigned(result))+" reason_name="+result_name(result)+
                     " requested_target="+std::to_string(request.target_id)+" target="+std::to_string(target_id)+
                     " assignment="+std::to_string(assignment)+" detail="+assignment_details(request.target_id));
+                }
+            }
+            // EF05 may turn on the marker. Wait for FE02 to confirm capture and
+            // that the marker is off before updating the camera position.
+            const bool capture_status_confirmed=!demo_requested || (demo_seen && (flags&8));
+            if (assignment==2 && tracking_target && target_id==tracking_target->id && !target_consistent &&
+                observation.streaming && real_control->operating(rdr_state) && ready && !(flags&6) &&
+                capture_status_confirmed && state.status_received_at!=last_tracking_status_sample) {
+                last_tracking_status_sample=state.status_received_at;
+                try {
+                    const auto result=point_at_target(*tracking_target);
+                    if (result==gui::Result::success) {
+                        position_guard.start({tracking_target->east,tracking_target->north,tracking_target->up},
+                            rdr_state.targets.at(uint16_t(tracking_target->id)).seen);
+                        health.start();
+                        move_deadline=Clock::now()+std::chrono::seconds(60);
+                        next_poll={};
+                    } else if (result!=gui::Result::device_busy) {
+                        health.fail(result);
+                    }
+                } catch (const std::exception& error) {
+                    health.fail(gui::Result::device_error);
+                    log(std::string("FCS tracking: ")+error.what());
                 }
             }
             gui::Frame frame; frame.header.sequence=++frame_sequence; frame.header.timestamp_ms=unix_ms();

@@ -68,18 +68,37 @@ def main():
             print(json.dumps({'input_world_xyz':initial_xyz,'ecs_rdr_world_xyz':[.5,0,0],
                 'synchronized_dummy_rdr_world_xyz':synced['rdr_world'],
                 'actual_gui_target_xyz':next(t[4:7] for t in target_records(restored) if t[0]==7)}))
-            # Updating an existing ID emits LOST before its new observation;
-            # this resets C2's fixed-world cache without restarting C2.
+            if not external:
+                assert gui.command(1,target=7)==0
+                def aligned():
+                    gui.command(0)
+                    return gui.last_response[7] == 2
+                eventually(aligned, bool)
+                before = eventually(state, bool)
             control={'scenario':'normal','target_count':1,'targets':[{'id':7,'xyz':[-1,3,.75]}]}
             temporary=runtime/'control.update'
             temporary.write_text(json.dumps(control),encoding='utf-8')
             temporary.replace(runtime/'control.json')
-            gui.wait(lambda raw:valid_count(raw)==0)
-            gui.wait(at((-1,3,.75)))
-            assert gui.command(1,target=7)==0
-            eventually(state,lambda s:abs(pan(s)-161.6)<.11)
+            if external:
+                gui.wait(lambda raw:valid_count(raw)==0)
+                gui.wait(at((-1,3,.75)))
+                assert gui.command(1,target=7)==0
+                eventually(state,lambda s:abs(pan(s)-161.6)<.11)
+            else:
+                def moving():
+                    raw = gui.frame()
+                    assert valid_count(raw)==1 and target_records(raw)[0][0]==7
+                    return state() or before
+                during = eventually(moving, lambda s: s['fcs_target_azimuth_deg'] < s['fcs_azimuth_deg']-.2
+                    and s['fcs_pan_travel_deg']<-.2)
+                assert during['fcs_target_elevation_deg'] > before['fcs_target_elevation_deg']
+                end = eventually(moving, lambda s: s['fcs_azimuth_deg'] < 165
+                    and abs(s['fcs_azimuth_deg']-s['fcs_target_azimuth_deg'])<.11
+                    and abs(s['fcs_elevation_deg']-s['fcs_target_elevation_deg'])<.11)
+                assert end['fcs_elevation_deg'] > before['fcs_elevation_deg']
+                print('PASS: same ID stays visible and ECS changes both 3D view axes through EF03')
             assert gui.command(2,target=7)==0
-            print('PASS: selected target ID/world XYZ, mirrored lidar X, pose invariance, live reposition/reacquisition, right/left FCS commands')
+            print('PASS: selected target ID/world XYZ, mirrored lidar X, pose invariance and right/left FCS commands')
             print('PASS: GUI RDR position change is synchronized; target world XYZ stays unchanged')
             if external:
                 assert external.error is None

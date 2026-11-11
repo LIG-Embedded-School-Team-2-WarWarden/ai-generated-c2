@@ -115,6 +115,7 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     children = []
     panel = None
+    fcs_view = None
     logs = []
     ipc_suffix = '_sim_' + uuid.uuid4().hex[:10] if args.isolated_ipc else ''
     try:
@@ -145,22 +146,24 @@ def main():
             panel = tk.Tk()
             title='라이다 더미 / FCS 실장비' if args.real_fcs else 'RDR / FCS 모의기'
             panel.title(title)
-            panel.geometry('440x590')
-            ttk.Label(panel, text=title, font=('맑은 고딕', 17, 'bold')).pack(pady=12)
+            panel.geometry('440x590' if args.real_fcs else '920x590')
+            controls = ttk.Frame(panel, width=440)
+            controls.pack(side='left', fill='y')
+            ttk.Label(controls, text=title, font=('맑은 고딕', 17, 'bold')).pack(pady=12)
             description=(f'라이다만 더미입니다. FCS: {fcs_peer["ip"]}:{fcs_peer["port"]}\nGUI에서 표적 할당을 누르면 실장비가 이동합니다.'
                 if args.real_fcs else '로컬 UDP → C2 → WPF\n실제 장비 출력 없이 화면과 통신을 확인합니다.')
-            ttk.Label(panel, text=description, justify='center').pack()
+            ttk.Label(controls, text=description, justify='center').pack()
             status = tk.StringVar()
-            ttk.Label(panel, textvariable=status, justify='left').pack(pady=12)
+            ttk.Label(controls, textvariable=status, justify='left').pack(pady=12)
             def choose(scenario):
                 control['scenario'] = scenario
                 write_json(control_file, control)
             scenarios=[('정상 · 지정 표적' if args.target else '정상 · 표적 10개','normal'),('표적 소실','empty'),('RDR 연결 끊김','rdr-offline')]
             if not args.real_fcs:scenarios += [('FCS 연결 끊김','fcs-offline'),('FCS 결함','fcs-fault')]
             for label, scenario in scenarios:
-                ttk.Button(panel, text=label, command=lambda value=scenario: choose(value)).pack(fill='x', padx=35, pady=3)
-            ttk.Label(panel,text='표적 월드 위치 (m): X 오른쪽 / Y 앞쪽 / Z 위쪽').pack(pady=(12,4))
-            editor=ttk.Frame(panel);editor.pack()
+                ttk.Button(controls, text=label, command=lambda value=scenario: choose(value)).pack(fill='x', padx=35, pady=3)
+            ttk.Label(controls,text='표적 월드 위치 (m): X 오른쪽 / Y 앞쪽 / Z 위쪽').pack(pady=(12,4))
+            editor=ttk.Frame(controls);editor.pack()
             initial=control.get('targets') or [{'id':1001,'xyz':[-1.4,2.8,.35]}]
             ident=tk.StringVar(value=str(initial[0]['id']))
             selector=ttk.Combobox(editor,textvariable=ident,width=7,state='readonly',
@@ -188,12 +191,18 @@ def main():
                     # Validate before replacing the running scenario.
                     devices.configure(control['scenario'],control['target_count'],updated,control.get('rdr_world',(0,0,0)))
                     control['targets']=updated;write_json(control_file,control)
-                    edit_status.set('위치 적용: 소실 후 새 위치로 재검출합니다.')
+                    edit_status.set('위치 적용: 소실 후 새 위치로 재검출합니다.' if args.real_fcs
+                        else '위치 적용: 같은 ID로 새 좌표를 전송합니다.')
                 except (ValueError,TypeError,KeyError) as error:
                     edit_status.set(str(error))
-            ttk.Button(panel,text='표적 위치 적용',command=apply_target).pack(pady=6)
-            ttk.Label(panel,textvariable=edit_status,wraplength=410).pack()
-            ttk.Button(panel, text='전체 종료', command=stop).pack(pady=10)
+            ttk.Button(controls,text='표적 위치 적용',command=apply_target).pack(pady=6)
+            ttk.Label(controls,textvariable=edit_status,wraplength=390).pack()
+            ttk.Button(controls, text='전체 종료', command=stop).pack(pady=10)
+            if not args.real_fcs:
+                from fcs_view import FcsView
+                panel.minsize(760, 520)
+                fcs_view = FcsView(panel)
+                fcs_view.pack(side='right', fill='both', expand=True)
             panel.protocol('WM_DELETE_WINDOW', stop)
         started, last_poll, seen = time.monotonic(), 0, None
         while not exiting and not stop_file.exists():
@@ -247,6 +256,8 @@ def main():
                         f'FCS 고각={state["fcs_elevation_deg"]:.1f}° / 방위각={state["fcs_azimuth_deg"]:.1f}°')
                     status.set(f'시나리오: {state["scenario"]}\nRDR 연결={state["rdr_connected"]} / 모드={state["rdr_mode"]}\n'+fcs_status)
             if panel:
+                if fcs_view:
+                    fcs_view.update_pose(devices.snapshot())
                 panel.update()
             time.sleep(.02)
     finally:

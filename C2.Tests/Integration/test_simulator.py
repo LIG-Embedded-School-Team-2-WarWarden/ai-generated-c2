@@ -76,8 +76,30 @@ def main():
                 return fields
             eventually(lambda: response(0), lambda r: r[7] == 2)
             assert response(3, 1001)[4] == 0
+            events = runtime / 'events.log'
+
+            def diagnostic_rows(event):
+                if not events.exists():
+                    return []
+                return [dict(field.split('=', 1) for field in line.split() if '=' in field)
+                        for line in events.read_text(encoding='utf-8').splitlines() if event in line]
+
+            busy = eventually(lambda: diagnostic_rows('FCS busy_observed=1'),
+                              lambda rows: any(int(row['flags']) & 8 for row in rows))[-1]
+            busy_response = response(7)
+            assert (busy_response[4], busy_response[8], busy_response[9]) == (0, 1, 1), busy_response
+            blocked = response(1, 1002)
+            assert blocked[4] == 2, blocked
+            request = eventually(lambda: diagnostic_rows('GUI assignment_received'),
+                                 lambda rows: rows and rows[-1]['request_id'] == str(blocked[2]))[-1]
+            assert request['busy_observed'] == '1', request
+            assert int(busy['status_rx_us']) <= int(request['status_rx_us']) <= int(request['request_rx_us'])
             eventually(lambda: response(0), lambda r: r[8] == 1)
+            cleared = eventually(lambda: diagnostic_rows('FCS busy_observed=0'),
+                                 lambda rows: rows and int(rows[-1]['status_rx_us']) > int(request['request_rx_us']))[-1]
+            assert cleared['observation'] == 'change', cleared
             assert response(2, 1001)[4] == 0
+            eventually(lambda: response(7), lambda r: (r[4], r[8], r[9]) == (0, 0, 1))
 
             # Target 1001 is fixed at base (east,north,up)=(-1.4,2.8,.35).
             # These independent angle fixtures cover each installation offset,

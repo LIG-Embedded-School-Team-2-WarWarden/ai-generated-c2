@@ -33,6 +33,7 @@ class Devices:
         self.fcs_tx = 0
         self.elevation, self.azimuth = 12.3, 180.2
         self.target_elevation, self.target_azimuth = self.elevation, self.azimuth
+        self.point_start_elevation, self.point_start_azimuth = self.elevation, self.azimuth
         self.demo_until = self.laser_until = 0
         self.received = {'RDR': 0, 'FCS': 0}
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -75,10 +76,12 @@ class Devices:
             new_ids={t['id'] for t in scene} if scene is not None else set(range(1001,1001+int(target_count)))
             if self.connected and new_ids-old_ids:
                 raise ValueError('Restart the dummy to introduce new target IDs; existing IDs can be repositioned live')
-            if scene!=self.targets or origin!=self.rdr_world:
+            # Changing a coordinate of an existing simulated track is motion.
+            # Keep the reacquisition behavior for the physical-FCS runner.
+            if origin!=self.rdr_world or (self.fcs is None and scene!=self.targets):
                 self.target_reset_until=time.monotonic()+.8
-                if self.connected:
-                    self.retired_ids.update(old_ids-new_ids)
+            if self.connected:
+                self.retired_ids.update(old_ids-new_ids)
             self.targets,self.rdr_world=scene,origin
             self.scenario, self.target_count = scenario, int(target_count)
 
@@ -153,6 +156,7 @@ class Devices:
             elif self.scenario == 'fcs-fault':
                 result = 3
             else:
+                self.point_start_elevation, self.point_start_azimuth = self.elevation, self.azimuth
                 self.target_elevation, self.target_azimuth = elevation / 10, azimuth / 10
         elif kind == 0xEF04:
             enabled = struct.unpack_from('!H', raw, 6)[0]
@@ -257,7 +261,12 @@ class Devices:
                     'rdr_connected': self.connected, 'rdr_mode': self.mode, 'reporting': self.reporting,
                     'rdr_pan_deg': round(self.pan, 1), 'mock_fcs_enabled': self.fcs is not None,
                     'fcs_elevation_deg': round(self.elevation, 1) if self.fcs else None,
-                    'fcs_azimuth_deg': round(self.azimuth, 1) if self.fcs else None, 'received': dict(self.received)}
+                    'fcs_azimuth_deg': round(self.azimuth, 1) if self.fcs else None,
+                    'fcs_target_elevation_deg': self.target_elevation if self.fcs else None,
+                    'fcs_target_azimuth_deg': self.target_azimuth if self.fcs else None,
+                    'fcs_pan_travel_deg': round(self.azimuth-self.point_start_azimuth, 1) if self.fcs else None,
+                    'fcs_tilt_travel_deg': round(self.elevation-self.point_start_elevation, 1) if self.fcs else None,
+                    'received': dict(self.received)}
 
     def close(self):
         self.done.set()

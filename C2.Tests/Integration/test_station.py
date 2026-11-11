@@ -101,6 +101,7 @@ class FcsBoard:
         self.azimuth = 1800  # Wire angles use 0.1 degrees.
         self.point_result = 0
         self.laser = False
+        self.capturing = False
         self.wire = []
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -127,9 +128,12 @@ class FcsBoard:
                     value = struct.unpack_from('!H', data, 6)[0]
                     assert value in (0, 1)
                     self.laser = bool(value)
+                if kind == 0xEF05:
+                    self.capturing = self.laser = True
                 header = struct.pack('!3H', kind + 0xF00, self.tx, sequence)
                 if kind == 0xEF02:
-                    response = header + struct.pack('!Hhh', 1 | (4 if self.laser else 0), self.elevation, self.azimuth)
+                    flags = 1 | (4 if self.laser else 0) | (8 if self.capturing else 0)
+                    response = header + struct.pack('!Hhh', flags, self.elevation, self.azimuth)
                 elif kind == 0xEF04:
                     response = header + struct.pack('!3H', 0, int(self.laser), 0)
                 elif kind == 0xEF03:
@@ -267,18 +271,27 @@ def main():
                     displayed = next(t[4:7] for t in target_records(gui.frame()) if t[0] == 7)
                     assert abs(displayed[0]-initial[0]) > .015, (initial, displayed)
                 assert sum(packet[:2] == b'\xef\x03' for packet in fcs.wire) == points
-                # A real, sustained displacement must still invalidate alignment.
-                moved = (7, (-(initial[0]+1), initial[2], initial[1]), 0, 1800)
-                rdr.observations = [moved]
-                wait_assignment(3)
+                assert gui.command(3, target=7) == 0
+                assert fcs.capturing and fcs.laser
+                rdr.observations = [(7, (-(initial[0]+1), initial[2], initial[1]), 0, 1800)]
+                gui.wait(lambda raw: any(t[0] == 7 and t[4] > initial[0] + .2 for t in target_records(raw)))
                 assert sum(packet[:2] == b'\xef\x03' for packet in fcs.wire) == points
-                assert gui.command(2, target=7) == 0
-                # Reassignment starts a new reference; it does not inherit the
-                # preceding displacement confirmation or freeze GUI coordinates.
-                rdr.observations = []
-                time.sleep(.2)
-                assert gui.command(1, target=7) == 0
-                wait_assignment(2)
+                for displacement in (1, -1):
+                    previous = [packet for packet in fcs.wire if packet[:2] == b'\xef\x03']
+                    fcs.laser = False
+                    moved = (7, (-(initial[0]+displacement), initial[2], initial[1]), 0, 1800)
+                    rdr.observations = [moved]
+                    end = time.monotonic() + 6
+                    while time.monotonic() < end:
+                        commands = [packet for packet in fcs.wire if packet[:2] == b'\xef\x03']
+                        if len(commands) > len(previous):
+                            assert commands[-1][6:10] != previous[-1][6:10]
+                            assert fcs.capturing
+                            break
+                        time.sleep(.05)
+                    else:
+                        raise AssertionError('same-ID displacement did not send an EF03 update')
+                    wait_assignment(2)
                 rdr.track_state = 0
                 rdr.observations = [moved]
                 gui.wait(lambda raw: valid_count(raw) == 0)
@@ -291,16 +304,9 @@ def main():
                 assert rdr.error is None and fcs.error is None
                 logged = event_log.read_text(encoding='utf-8')
                 assert 'runtime_start ' in logged and 'runtime_stop graceful=1' in logged
-                failures = [line for line in logged.splitlines()
-                            if 'assignment=3 reason=9 reason_name=target_changed' in line]
-                assert failures, logged
-                detail = json.loads(failures[-1].split(' detail=', 1)[1])
-                assert detail['outside_samples'] == 3 and detail['filtered_xyz'] is not None
-                assert detail['reference_xyz'] is not None and detail['delta_xyz'] is not None
-                assert all(abs(a-b) < 1e-12 for a,b in zip(detail['tolerance_xyz_m'], [.075, .054, .05]))
+                assert 'assignment=3 reason=9 reason_name=target_changed' not in logged
                 assert 'reason_name=target_pending' in logged
-                print('PASS: default persistent event log, readable failure reason and assignment diagnostic values')
-                print('PASS: live Kalman jitter retains assignment; sustained movement, reassignment and target loss; no automatic pointing')
+                print('PASS: same-ID tracking during capture, marker interlock, jitter suppression and target loss')
                 return
             if args.filtered:
                 wait('fcs status', lambda value: value['confirmed'] and value['connected'])
