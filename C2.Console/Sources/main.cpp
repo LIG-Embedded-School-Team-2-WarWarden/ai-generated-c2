@@ -336,18 +336,19 @@ int main(int argc, char** argv) {
             if (!target_id) return;
             health.fail(gui::Result::target_changed);
             active=0;demo_requested=demo_seen=false;
-            log("Installation positions changed: existing alignment invalid; reassign required");
+            log("Installation positions/calibration changed: existing alignment invalid; reassign required");
         };
         Clock::time_point next_poll{}, next_log{}, move_deadline{}, next_installation_check{}, next_rdr_retry{};
         auto point_at_target=[&](const Target& target) {
             const double east=target.east+installation.eff_position[1];
             const double north=target.north-installation.eff_position[0];
             const double up=target.up-installation.eff_position[2];
-            const auto angles=fcs_point_angles(east,north,up);
+            const auto angles=fcs_point_angles(east,north,up,installation.fcs_calibration);
             log("FCS point target="+std::to_string(target.id)+
                 " corrected_xyz="+std::to_string(target.east)+","+std::to_string(target.north)+","+std::to_string(target.up)+
                 " relative_xyz="+std::to_string(east)+","+std::to_string(north)+","+std::to_string(up)+
-                " pan="+std::to_string(angles.azimuth)+" tilt="+std::to_string(angles.elevation));
+                " pan="+std::to_string(angles.azimuth)+" tilt="+std::to_string(angles.elevation)+
+                " calibration="+fcs_calibration_json(installation.fcs_calibration).dump());
             const auto result=command_result("EF03",client->point(angles.elevation,angles.azimuth));
             if (result==gui::Result::success) {
                 commanded_pan=angles.azimuth;
@@ -386,6 +387,7 @@ int main(int argc, char** argv) {
                         if(command=="connect"||command=="status")expected=2;
                         else if(command=="point")expected=4;
                         else if(command=="laser")expected=3;
+                        else if(command=="calibration")expected=words.size()==2?2:7;
                     }
                     if(!expected || words.size()!=expected)throw std::invalid_argument("invalid command or argument count");
                     if(device=="quit" || device=="exit")break;
@@ -403,6 +405,28 @@ int main(int argc, char** argv) {
                         else if(command=="exclude"||command=="resume") {input>>arg;auto id=parse_port(arg);real_rdr->command(0xED04,id,command=="resume");}
                         else if(command!="status"&&command!="targets")throw std::invalid_argument("unknown RDR command");
                         rdr_reply=command=="targets"?RdrReply::targets:RdrReply::state;
+                    } else if(device=="fcs" && command=="calibration") {
+                        if(words.size()==7) {
+                            auto saved=installation;
+                            auto number=[](const std::string& text) {
+                                double value{};
+                                auto [end,error]=std::from_chars(text.data(),text.data()+text.size(),value);
+                                if(error!=std::errc{} || end!=text.data()+text.size() || !std::isfinite(value))
+                                    throw std::invalid_argument("calibration requires PAN_offset TILT_offset yaw pitch roll in degrees");
+                                return value;
+                            };
+                            saved.fcs_calibration={number(words[2]),number(words[3]),number(words[4]),number(words[5]),number(words[6])};
+                            validate_fcs_calibration(saved.fcs_calibration);
+                            save_installation_settings(installation_file,saved,standalone_installation);
+                            std::error_code timestamp_error;
+                            installation_seen=std::filesystem::last_write_time(installation_file,timestamp_error);
+                            installation_missing=false;
+                            if(saved.fcs_calibration!=installation.fcs_calibration)invalidate_installation_alignment();
+                            installation=std::move(saved);
+                            log("FCS calibration saved "+fcs_calibration_json(installation.fcs_calibration).dump());
+                        }
+                        std::cout<<nlohmann::json{{"fcs","calibration"},
+                            {"calibration",fcs_calibration_json(installation.fcs_calibration)}}.dump()<<std::endl;
                     } else if(device=="fcs" && client) {
                         std::optional<fcs::Packet> response;
                         if(command=="connect")response=client->connect();
@@ -440,7 +464,9 @@ int main(int argc, char** argv) {
                     installation_seen = modified;
                     try {
                         auto updated = load_installation_settings(installation_file);
-                        if(updated.rdr_position!=installation.rdr_position || updated.eff_position!=installation.eff_position)
+                        if(updated.rdr_position!=installation.rdr_position || updated.eff_position!=installation.eff_position ||
+                            updated.fcs_calibration!=installation.fcs_calibration || updated.effector_id!=installation.effector_id ||
+                            updated.observer_id!=installation.observer_id)
                             invalidate_installation_alignment();
                         installation = std::move(updated);
                         log("display_config reloaded");

@@ -122,6 +122,9 @@ def main():
             stored['installation']['note'] = 'preserve metadata'
             stored['installation']['devices']['unused'] = {'role': 'OTHER', 'position': [9, 8, 7]}
             settings = stored['installation']
+            settings['devices'][settings['effector']]['calibration'] = {
+                'pan_offset_deg': 1.2, 'tilt_offset_deg': -0.4,
+                'yaw_deg': 3, 'pitch_deg': 2, 'roll_deg': -1, 'note': 'keep calibration metadata'}
             settings['devices'][settings['observer']]['position'] = [2, -1, 3]
             path.write_text(json.dumps(stored), encoding='utf-8')
             gui.wait(lambda f: positions(f)[0] == (1, 2, 3))
@@ -129,6 +132,14 @@ def main():
             after = json.loads(path.read_text())['installation']
             assert after['note'] == 'preserve metadata'
             assert after['devices']['unused'] == stored['installation']['devices']['unused']
+            assert after['devices'][settings['effector']]['calibration'] == settings['devices'][settings['effector']]['calibration']
+
+        # Reload the calibration in a fresh process, then persist through a GUI edit.
+        with running(executable, runtime, path) as gui:
+            gui.wait(lambda f: positions(f)[0] == (1, 2, 3))
+            assert gui.command(5, rdr=1, fcs=0, xyz=(1, 2, 3)) == 0
+            restarted = json.loads(path.read_text())['installation']
+            assert restarted['devices'][settings['effector']]['calibration'] == settings['devices'][settings['effector']]['calibration']
 
         # No --config: the executable directory owns the persistent file.
         copied = runtime / 'C2.Console.exe'

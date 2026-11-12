@@ -1,6 +1,7 @@
 #include "protocol.hpp"
 #include "rdr_control.hpp"
 #include "fcs_angles.hpp"
+#include "installation_config.hpp"
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -22,6 +23,31 @@ struct GuiDriver {
     }
 };
 int gui_v3_entry() {
+    {
+        const auto original=fcs_point_angles(1,2,3);
+        const auto zero=fcs_point_angles(1,2,3,{});
+        check(original.azimuth==zero.azimuth && original.elevation==zero.elevation,"zero calibration preserves commands");
+        const auto offset=fcs_point_angles(0,1,0,{1.25,-2.25});
+        check(offset.azimuth==181.3 && offset.elevation==-2.3,"offsets quantized once after correction");
+        check(fcs_point_angles(1,0,0,{0,0,90}).azimuth==180,"east-facing installation sees east straight ahead");
+        check(fcs_point_angles(0,1,1,{0,0,0,45}).elevation==0,"raised mount compensates pitch");
+        check(fcs_point_angles(1,1,1,{0,0,0,0,45}).elevation==0,"right-up installation compensates roll");
+        const auto composite=fcs_point_angles(-1,3,2,{0,0,90,90,90});
+        check(composite.azimuth==original.azimuth && composite.elevation==original.elevation,
+            "inverse rotation matches independent roll-pitch-yaw fixture");
+        const auto c=parse_fcs_calibration({{"pan_offset_deg",1.2},{"pitch_deg",3}});
+        check(c.pan_offset_deg==1.2 && c.pitch_deg==3 && c.roll_deg==0,"partial calibration defaults");
+        check(parse_fcs_calibration(fcs_calibration_json(c))==c,"calibration JSON roundtrip");
+        for(const auto& invalid : {nlohmann::json::array(),nlohmann::json{{"yaw_deg",181}},
+                nlohmann::json{{"pan_offset_deg","1"}},nlohmann::json{{"roll_deg",nullptr}}}) {
+            bool rejected=false;try{(void)parse_fcs_calibration(invalid);}catch(const std::invalid_argument&){rejected=true;}
+            check(rejected,"reject malformed calibration");
+        }
+        bool rejected=false;
+        try{(void)fcs_point_angles(0,1,0,{std::numeric_limits<double>::quiet_NaN()});}
+        catch(const std::invalid_argument&){rejected=true;}
+        check(rejected,"reject nonfinite calibration");
+    }
     namespace gui=c2::ipc;
     gui::Frame frame;
     frame.payload.rdr_count=frame.payload.fcs_count=1;
