@@ -454,34 +454,6 @@ def main():
             assert gui.command(1, target=7) == 0
             assert (fcs.elevation, fcs.azimuth) == (-27, 1919)
             assert gui.command(2, target=7) == 0
-            # Calibration is persisted, used by actual EF03 traffic, and never
-            # applied to explicit motor-angle commands.
-            assert all(v == 0 for v in ask('fcs calibration')['calibration'].values())
-            calibration = ask('fcs calibration 1.2 -0.4 0 0 0')['calibration']
-            saved = json.loads(config_path.read_text())
-            assert saved['installation']['devices']['FCS-1']['calibration'] == calibration
-            assert gui.command(1, target=7) == 0
-            assert (fcs.elevation, fcs.azimuth) == (-31, 1931)
-            before = config_path.read_bytes()
-            for bad in ('fcs calibration nan 0 0 0 0', 'fcs calibration 0 0 181 0 0',
-                        'fcs calibration 0 0 0 0 tail', 'fcs calibration 1 2'):
-                assert 'rejected' in ask(bad)
-                assert config_path.read_bytes() == before
-            assert ask('fcs point 20 180')['result'] == 0
-            assert (fcs.elevation, fcs.azimuth) == (200, 1800)
-            # A changed correction invalidates the existing assignment.
-            ask('fcs calibration 0 0 0 0 0')
-            assert gui.command(0) == 0
-            assert gui.last_response[6] != 2
-            assert gui.command(2, target=7) == 0
-            saved = json.loads(config_path.read_text())
-            saved['installation']['devices']['FCS-1']['calibration']['yaw_deg'] = 90
-            config_path.write_text(json.dumps(saved), encoding='utf-8')
-            wait('fcs calibration', lambda value: value['calibration']['yaw_deg'] == 90)
-            assert gui.command(1, target=7) == 0
-            assert (fcs.elevation, fcs.azimuth) == (-27, 1019)
-            assert gui.command(2, target=7) == 0
-            ask('fcs calibration 0 0 0 0 0')
             fcs.point_result = 2  # Device INVALID_VALUE must remain a device rejection.
             points = sum(packet[:2] == b'\xef\x03' for packet in fcs.wire)
             assert gui.command(1, target=7) == 6

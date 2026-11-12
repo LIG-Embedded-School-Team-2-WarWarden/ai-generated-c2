@@ -14,13 +14,6 @@
   "installation": {
     "devices": {
       "FCS-1": {
-        "calibration": {
-          "pan_offset_deg": 0,
-          "tilt_offset_deg": 0,
-          "yaw_deg": 0,
-          "pitch_deg": 0,
-          "roll_deg": 0
-        },
         "position": [
           0.0,
           0.5,

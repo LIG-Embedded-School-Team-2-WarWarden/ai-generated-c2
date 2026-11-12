@@ -12,32 +12,12 @@
 #include <windows.h>
 
 #include <nlohmann/json.hpp>
-#include "fcs_angles.hpp"
-
-inline nlohmann::json fcs_calibration_json(const FcsCalibration& c) {
-    return {{"pan_offset_deg",c.pan_offset_deg},{"tilt_offset_deg",c.tilt_offset_deg},
-        {"yaw_deg",c.yaw_deg},{"pitch_deg",c.pitch_deg},{"roll_deg",c.roll_deg}};
-}
-inline FcsCalibration parse_fcs_calibration(const nlohmann::json& json) {
-    if(!json.is_object())throw std::invalid_argument("FCS calibration must be an object");
-    FcsCalibration result;
-    const auto read=[&](const char* key,double& value) {
-        if(!json.contains(key))return;
-        if(!json.at(key).is_number())throw std::invalid_argument("FCS calibration must contain numeric degrees");
-        value=json.at(key).get<double>();
-    };
-    read("pan_offset_deg",result.pan_offset_deg);read("tilt_offset_deg",result.tilt_offset_deg);
-    read("yaw_deg",result.yaw_deg);read("pitch_deg",result.pitch_deg);read("roll_deg",result.roll_deg);
-    validate_fcs_calibration(result);
-    return result;
-}
 
 // Common installation positions (forward,left,up) used by the map and FCS
 // assignment calculation. Raw RDR targets are first rotated with their observation
 // PAN/TILT by sensor_to_base; translate that result, then subtract FCS position.
 struct InstallationConfig {
     std::array<double, 3> rdr_position{}, eff_position{};
-    FcsCalibration fcs_calibration{};
     std::string observer_id{"RDR-1"}, effector_id{"FCS-1"};
 };
 
@@ -103,8 +83,6 @@ inline InstallationConfig parse_installation_config(const nlohmann::json& config
             throw std::invalid_argument("Installation config: no EFF device was configured");
     }
     result.eff_position = installation_config_detail::position(devices, result.effector_id, "EFF");
-    const auto& effector=devices.at(result.effector_id);
-    if(effector.contains("calibration"))result.fcs_calibration=parse_fcs_calibration(effector.at("calibration"));
     return result;
 }
 
@@ -151,9 +129,6 @@ inline void save_installation_settings(const std::filesystem::path& path,
     devices[value.observer_id]["position"] = value.rdr_position;
     devices[value.effector_id]["role"] = "EFF";
     devices[value.effector_id]["position"] = value.eff_position;
-    auto& calibration=devices[value.effector_id]["calibration"];
-    if(calibration.is_null())calibration=nlohmann::json::object();
-    calibration.update(fcs_calibration_json(value.fcs_calibration));
     (void)parse_installation_config(settings);
     document["installation"] = std::move(settings);
 
