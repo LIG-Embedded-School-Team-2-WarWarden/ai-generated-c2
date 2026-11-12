@@ -7,6 +7,8 @@
 #include <condition_variable>
 #include <mutex>
 #include <optional>
+#include <functional>
+#include <string>
 
 namespace c2::fcs {
 struct ClientConfig {
@@ -14,6 +16,8 @@ struct ClientConfig {
     UdpConfig local;
     std::chrono::milliseconds response_timeout{1000};
     std::uint32_t missed_status_limit{3};
+    // Called from request and receiver threads; must not re-enter Client.
+    std::function<void(const std::string&)> diagnostic;
 };
 struct Status {
     std::uint16_t flags{};
@@ -43,6 +47,7 @@ public:
     [[nodiscard]] std::optional<Packet> laser(bool on);
     [[nodiscard]] std::optional<Packet> demo();
 private:
+    void diagnose(const std::string& message) const noexcept;
     std::optional<Packet> exchange(Packet request);
     void receive(std::vector<std::byte> bytes, const Endpoint& source);
     ClientConfig config_;

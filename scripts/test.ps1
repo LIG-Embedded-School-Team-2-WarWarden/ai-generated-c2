@@ -23,6 +23,8 @@ try {
     if($LASTEXITCODE){throw 'Shared filtered GUI/FCS coordinate scenarios failed.'}
     python ./C2.Tests/Integration/test_station.py --console "./x64/$Configuration/C2.Console.exe" --jitter
     if($LASTEXITCODE){throw 'Assignment jitter and sustained movement scenarios failed.'}
+    python ./C2.Tests/Integration/test_station.py --console "./x64/$Configuration/C2.Console.exe" --gap
+    if($LASTEXITCODE){throw 'Camera observation gap prediction scenarios failed.'}
     python ./C2.Tests/Integration/test_simulator.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Persistent simulator scenarios failed.'}
     python ./C2.Tests/Integration/test_target_dummy.py --console "./x64/$Configuration/C2.Console.exe"

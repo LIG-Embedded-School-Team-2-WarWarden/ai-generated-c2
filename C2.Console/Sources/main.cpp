@@ -3,6 +3,7 @@
 #include "rdr_control.hpp"
 #include "rdr_live_diagnostics.hpp"
 #include "target_position_filter.hpp"
+#include "target_gap_predictor.hpp"
 #include "rdr_coordinate_recorder.hpp"
 #include "transport.hpp"
 #include "assignment_health.hpp"
@@ -206,6 +207,7 @@ int main(int argc, char** argv) {
             else throw std::invalid_argument("unknown console option");
         }
         c2::rdr::TargetPositionFilter position_filter(position_filter_config);
+        c2::rdr::TargetGapPredictor gap_predictor;
         const auto position_filter_parameters=c2::rdr::target_position_filter_json(position_filter_config);
         if (rdr_local_ip.empty()) rdr_local_ip=config.local.bind_address;
         for (const auto& address : {config.local.bind_address,config.peer.address,rdr_ip,rdr_local_ip})
@@ -232,7 +234,9 @@ int main(int argc, char** argv) {
         events.open(event_log_file,std::ios::app);
         if(!events) throw std::runtime_error("cannot open event log: "+event_log_file.string());
         bool event_log_error_reported{};
+        std::mutex event_log_mutex;
         auto log=[&](const std::string& message) {
+            std::lock_guard lock(event_log_mutex);
             const auto line=std::to_string(unix_ms())+" "+message;
             std::cout<<line<<std::endl;
             events<<line<<std::endl;
@@ -264,6 +268,7 @@ int main(int argc, char** argv) {
         std::unique_ptr<fcs::Client> client;
 
         std::unique_ptr<c2::rdr::Client> real_rdr;
+        config.diagnostic=log;
         if (!rdr_only) { client=std::make_unique<fcs::Client>(config); client->start(); }
         real_rdr=std::make_unique<c2::rdr::Client>(c2::UdpConfig{rdr_local_ip,uint16_t(rdr_local_port)},
                 c2::Endpoint{rdr_ip,uint16_t(rdr_port)});
@@ -327,6 +332,7 @@ int main(int argc, char** argv) {
             position_filter_config.measurement_stddev_xyz_m,position_filter_config.measurement_stddev_m));
         bool demo_requested{}, demo_seen{};
         auto invalidate_installation_alignment=[&]() {
+            gap_predictor.reset();
             if (!target_id) return;
             health.fail(gui::Result::target_changed);
             active=0;demo_requested=demo_seen=false;
@@ -477,9 +483,12 @@ int main(int argc, char** argv) {
             auto corrected_targets=c2::rdr::correct_targets(rdr_state,rdr_origin);
             // Domain coordinates are computed before either consumer runs.
             // GUI serialization never feeds coordinates back into control.
-            if (!real_control->operating(rdr_state)) position_filter.reset();
+            if (!real_control->operating(rdr_state)) { position_filter.reset();gap_predictor.reset(); }
             auto filtered_targets=position_filter.update(rdr_state,rdr_origin);
+            const double control_now=c2::rdr::seconds();
+            auto control_targets=gap_predictor.update(rdr_state,filtered_targets,rdr_origin,control_now);
             auto observation = observation_snapshot(rdr_state,filtered_targets);
+            const auto tracking_observation=observation_snapshot(rdr_state,control_targets);
             bool current = state.connected && state.status &&
                 Clock::now()-state.status_received_at < std::chrono::seconds(2);
             uint16_t flags = current ? state.status->flags : 0;
@@ -498,13 +507,16 @@ int main(int argc, char** argv) {
                 have_fcs_busy_sample = true;
             }
             bool ready = current && !(flags&16) && state.status->azimuth != -32768 && state.status->elevation != -32768;
-            auto assigned_now = std::find_if(observation.targets.begin(), observation.targets.end(),
+            auto assigned_now = std::find_if(tracking_observation.targets.begin(), tracking_observation.targets.end(),
                 [&](const Target& t) { return t.id == target_id; });
-            const bool target_present=target_id && assigned_now!=observation.targets.end();
+            const bool target_present=target_id && assigned_now!=tracking_observation.targets.end();
             const auto tracking_target=target_present?std::optional<Target>{*assigned_now}:std::nullopt;
-            const bool target_consistent=target_present &&
+            const bool locally_predicted=target_present && control_now-
+                rdr_state.targets.at(uint16_t(assigned_now->id)).seen>c2::rdr::TargetGapPredictor::gap_delay_s;
+            const bool target_consistent=target_present && (locally_predicted?
+                position_guard.prediction_consistent({assigned_now->east,assigned_now->north,assigned_now->up}):
                 position_guard.consistent({assigned_now->east,assigned_now->north,assigned_now->up},
-                    rdr_state.targets.at(uint16_t(assigned_now->id)).seen);
+                    rdr_state.targets.at(uint16_t(assigned_now->id)).seen));
             bool aligned=current && std::abs(state.status->azimuth-commanded_pan)<=1 &&
                 std::abs(state.status->elevation-commanded_tilt)<=1;
             if (real_rdr && target_id && observation.generation!=assigned_rdr_generation)
@@ -528,6 +540,18 @@ int main(int argc, char** argv) {
                 const auto now=std::find_if(observation.targets.begin(),observation.targets.end(),
                     [&](const Target& t){return t.id==inspected_target;});
                 detail["target_present"]=now!=observation.targets.end();
+                detail["display_target_present"]=now!=observation.targets.end();
+                detail["control_target_present"]=std::any_of(tracking_observation.targets.begin(),
+                    tracking_observation.targets.end(),[&](const Target& t){return t.id==inspected_target;});
+                detail["control_target_consistent"]=inspected_target==target_id && target_consistent;
+                detail["target_rx_age_ms"]=nullptr;
+                const auto raw=rdr_state.targets.find(uint16_t(inspected_target));
+                if(raw!=rdr_state.targets.end()) {
+                    detail["target_rx_age_ms"]=(control_now-raw->second.seen)*1000;
+                    detail["target_track_state"]=raw->second.track_state;
+                    detail["target_detected"]=raw->second.detected;
+                    detail["target_raw_status"]=raw->second.status;
+                }
                 if(now!=observation.targets.end()) detail["filtered_xyz"]={now->east,now->north,now->up};
                 if(inspected_target==target_id && position_guard.reference()) {
                     const auto& ref=*position_guard.reference();
@@ -541,7 +565,7 @@ int main(int argc, char** argv) {
                 log("assignment="+std::to_string(assignment)+" reason="+std::to_string(unsigned(health.reason))+" reason_name="+result_name(health.reason)+
                     " target="+std::to_string(target_id)+" flags="+std::to_string(flags)+
                     " status_age_ms="+std::to_string(state.status?std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-state.status_received_at).count():-1)+
-                    " target_present="+std::to_string(assigned_now!=observation.targets.end())+
+                    " target_present="+std::to_string(target_present)+
                     " target_consistent="+std::to_string(target_consistent)+" aligned="+std::to_string(aligned)+
                     " detail="+assignment_details(target_id));
                 logged_state=assignment; logged_reason=unsigned(health.reason);
@@ -606,7 +630,7 @@ int main(int argc, char** argv) {
                     }
                     else if (request.command == 6 && real_control) {
                         result=static_cast<gui::Result>(real_control->set_operating(request).result);
-                        if (!real_control->operating(rdr_state)) position_filter.reset();
+                        if (!real_control->operating(rdr_state)) { position_filter.reset();gap_predictor.reset(); }
                     }
                     else if (request.fcs_id != 1 || request.rdr_id != 1) result=gui::Result::invalid_request;
                     else if (request.command == 0) { result=health.reason; }

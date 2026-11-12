@@ -25,6 +25,14 @@ public:
     void start(c2::rdr::BasePoint point,double sample_time) {
         reference_=point;last_sample_=sample_time;outside_samples_=0;consistent_=true;
     }
+    // A generated position is not an additional observed sample. Compare its
+    // displacement without modifying the observed-sample debounce history.
+    bool prediction_consistent(c2::rdr::BasePoint point) const {
+        return reference_ && c2::rdr::gui_point(point) &&
+            std::abs(point.east-reference_->east)<=tolerance_[0] &&
+            std::abs(point.north-reference_->north)<=tolerance_[1] &&
+            std::abs(point.up-reference_->up)<=tolerance_[2];
+    }
     bool consistent(c2::rdr::BasePoint point,double sample_time) {
         if (!reference_ || !c2::rdr::gui_point(point) || !std::isfinite(sample_time)) return false;
         // GUI frames and status requests must not turn one outlier into three samples.

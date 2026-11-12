@@ -162,7 +162,14 @@ void client_tests() {
     });
     server_ptr = &server;
     server.start();
-    Client client(config(server.local_endpoint()));
+    std::mutex diagnostic_mutex;
+    std::string diagnostics;
+    auto client_config=config(server.local_endpoint());
+    client_config.diagnostic=[&](const std::string& line) {
+        std::lock_guard lock(diagnostic_mutex);
+        diagnostics+=line+'\n';
+    };
+    Client client(client_config);
     client.start();
     rejects([&] { (void)client.query(); });
     inject_noise = true;
@@ -174,6 +181,13 @@ void client_tests() {
     check(connected && connected->result == Result::accepted, "match source, ID and reply-to");
     check(connected->sequence == 0, "accept firmware initial reply sequence zero");
     check(client.snapshot().connected, "connected after handshake");
+    {
+        std::lock_guard lock(diagnostic_mutex);
+        for(const auto* expected : {"reason=unexpected_peer", "reason=unexpected_message_id",
+            "reason=reply_to_mismatch", "reason=decode_error", "rx_match id=0xFE01",
+            "tx id=0xEF01 sequence=1", "hex="})
+            check(diagnostics.find(expected)!=std::string::npos, "wire diagnostic identifies injected failures");
+    }
     inject_noise = false;
     response_sequence = 65535;
     const auto status = client.query();
@@ -207,6 +221,13 @@ void client_tests() {
     check(control_count == before, "invalid wire angles are not sent");
     drop_control = true;
     check(!client.demo(), "control timeout has unknown outcome");
+    {
+        std::lock_guard lock(diagnostic_mutex);
+        check(diagnostics.find("timeout outcome_unknown id=0xEF05")!=std::string::npos,
+            "timeout diagnostic identifies command");
+        check(diagnostics.find("timeout_transport id=0xEF05")!=std::string::npos,
+            "timeout includes transport error counters");
+    }
     check(control_count == before + 1, "control command not retried");
     drop_status = true;
     check(!client.query() && client.snapshot().connected, "first status timeout");

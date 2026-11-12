@@ -103,6 +103,7 @@ class FcsBoard:
         self.laser = False
         self.capturing = False
         self.wire = []
+        self.point_events = []
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -121,6 +122,8 @@ class FcsBoard:
                 self.tx = (self.tx + 1) & 65535
                 if kind == 0xEF03:
                     elevation, azimuth, padding = struct.unpack_from('!hhH', data, 6)
+                    self.point_events.append({'time': time.monotonic(),
+                        'elevation_deg': elevation / 10, 'azimuth_deg': azimuth / 10})
                     assert padding == 0
                     if not self.point_result:
                         self.elevation, self.azimuth = elevation, azimuth
@@ -155,6 +158,9 @@ def main():
     parser.add_argument('--console', type=Path, required=True)
     parser.add_argument('--filtered', action='store_true')
     parser.add_argument('--jitter', action='store_true')
+    parser.add_argument('--gap', action='store_true')
+    parser.add_argument('--gap-direction', type=int, choices=(-1, 0, 1), default=1)
+    parser.add_argument('--report', type=Path)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     rdr, fcs = Board(), FcsBoard()
@@ -166,6 +172,9 @@ def main():
             # Exact coordinate/protocol contract; smoothing is tested separately.
             config['rdr']['gui_kalman'] = {'enabled': args.filtered or args.jitter,
                 'measurement_stddev_m': 1., 'process_stddev_m_sqrt_s': .001}
+            if args.gap:
+                config['rdr']['gui_kalman']['measurement_stddev_m'] = .05
+                config['rdr']['gui_kalman']['process_stddev_m_sqrt_s'] = .1
             if args.jitter:
                 config['rdr']['gui_kalman'].update({'measurement_stddev_m': .025,
                     'process_stddev_m_sqrt_s': .03,
@@ -243,6 +252,64 @@ def main():
             assert abs(struct.unpack_from('<f', frame, 52)[0] - 12.3) < .001
             target = next(t for t in target_records(frame) if t[0] == 7)
             assert all(abs(a-b)<1e-6 for a,b in zip(target[4:7], (.469,2.229,-.109)))
+            if args.gap:
+                wait('fcs status', lambda value: value['confirmed'] and value['connected'])
+                rdr.observations = [(7, (0, 0, 10), 0, 1800)]
+                gui.wait(lambda raw: any(t[0] == 7 and abs(t[4]) < .001 for t in target_records(raw)))
+                assert gui.command(1, target=7) == 0
+                for index in range(1, 21):
+                    rdr.observations = [(7, (-args.gap_direction * index * .1, 0, 10), 0, 1800)]
+                    time.sleep(.1)
+                rdr.observations = []
+                gap_started = time.monotonic()
+                time.sleep(.3)
+                commands = lambda: [p for p in fcs.wire if p[:2] == b'\xef\x03']
+                previous = len(commands())
+                angle = fcs.azimuth
+                end = time.monotonic() + .9
+                while time.monotonic() < end:
+                    if args.gap_direction and len(commands()) > previous and (fcs.azimuth - angle) * args.gap_direction > 0:
+                        break
+                    time.sleep(.03)
+                else:
+                    if args.gap_direction:
+                        raise AssertionError('DE03 gap did not continue camera motion')
+                    assert len(commands()) == previous, 'stationary subject drifted during gap'
+                time.sleep(1.6)
+                previous = len(commands())
+                time.sleep(.4)
+                assert len(commands()) == previous, 'prediction continued after horizon'
+                recovery_started = time.monotonic()
+                rdr.observations = [(7, (-4, 0, 10), 0, 1800)]
+                end = time.monotonic() + 4
+                while time.monotonic() < end and len(commands()) == previous:
+                    time.sleep(.05)
+                assert len(commands()) > previous, 'observation recovery did not resume tracking'
+                recovery_delay = time.monotonic() - recovery_started
+                rdr.track_state = 0
+                gui.wait(lambda raw: valid_count(raw) == 0)
+                time.sleep(.3)
+                previous = len(commands())
+                time.sleep(.4)
+                assert len(commands()) == previous, 'LOST did not stop camera tracking'
+                assert gui.command(2, target=7) == 0
+                process.stdin.write('quit\n');process.stdin.flush();process.wait(timeout=8)
+                assert process.returncode == 0, process.stderr.read()
+                assert rdr.error is None and fcs.error is None
+                if args.report:
+                    gap_events = [event for event in fcs.point_events
+                        if gap_started + .3 <= event['time'] < recovery_started]
+                    assert all(event['time'] - gap_started < 1.65 for event in gap_events), 'late prediction command'
+                    args.report.parent.mkdir(parents=True, exist_ok=True)
+                    args.report.write_text(json.dumps({
+                        'passed': True, 'direction': args.gap_direction, 'filtered': args.filtered,
+                        'gap_command_count': len(gap_events), 'recovery_delay_s': recovery_delay,
+                        'checks': ['gap_motion' if args.gap_direction else 'stationary_no_drift',
+                            'prediction_expiry', 'observation_recovery', 'lost_stops_tracking'],
+                        'commands': [{**event, 'time': event['time'] - gap_started}
+                            for event in fcs.point_events]}, indent=2), encoding='utf-8')
+                print('PASS: camera movement through DE03 gap, bounded expiry, recovery and LOST')
+                return
             if args.jitter:
                 wait('fcs status', lambda value: value['confirmed'] and value['connected'])
 
