@@ -30,6 +30,8 @@ struct Target {
 struct State {
     uint64_t generation{}; // Local session lifetime; never serialized on the wire.
     bool connected{},reporting{};uint16_t mode{},motor{2};
+    bool lidar_supported{},lidar_known{},lidar_on{},lidar_inhibited{};
+    uint16_t lidar_request{},lidar_result{}; // ED07 completion survives unrelated commands.
     int pan{-32768},tilt{-32768};std::map<uint16_t,Target> targets;
     std::set<uint16_t> excluded;
     uint16_t last_result{},last_command{}; // 0..8 board result; 9 local timeout
@@ -64,6 +66,8 @@ class Session {
         const auto tx=word(p,2);if(have_status_&&!newer(tx,status_sequence_))return false;
         const auto flags=word(p,20);if((flags>>8)>4)return false;
         have_status_=true;status_sequence_=tx;state_.mode=flags>>8;state_.reporting=(flags&4)!=0;
+        state_.lidar_supported=(flags&8)!=0;state_.lidar_known=(flags&16)!=0;
+        state_.lidar_on=(flags&32)!=0;state_.lidar_inhibited=(flags&64)!=0;
         state_.pan=signed_word(p,18);state_.tilt=signed_word(p,16);
         if(word(p,0)==0xDE02)state_.motor=std::min<uint16_t>(2,word(p,6));
         if(!state_.reporting||state_.mode!=2){invalidate();have_data_=true;data_sequence_=tx;}
@@ -77,11 +81,14 @@ public:
     uint16_t connect(double now){wanted_=true;if(state_.connected)return 0;if(!hello_)fresh_session(now);return 1;}
     uint16_t command(uint16_t msg,uint16_t a,uint16_t b,double now){
         if(!state_.connected)return 3;
-        if((msg!=0xED03&&msg!=0xED04&&msg!=0xED06)||
-           ((msg==0xED03||msg==0xED06)&&a>1)||(msg==0xED04&&(!a||b>1)))return 2;
+        if((msg!=0xED03&&msg!=0xED04&&msg!=0xED06&&msg!=0xED07)||
+           ((msg==0xED03||msg==0xED06||msg==0xED07)&&a>1)||(msg==0xED04&&(!a||b>1))||
+           (msg==0xED07&&b))return 2;
+        if(msg==0xED07&&!state_.lidar_supported)return 2;
         // Stop can interrupt startup. Other mutations are serialized.
         if(operation_&&!(msg==0xED06&&a==0))return 4;
         operation_=Pending{make(msg,a,b),now,now};outgoing_.push_back(operation_->packet);
+        if(msg==0xED07){state_.lidar_request=a;state_.lidar_result=1;}
         state_.last_command=msg;state_.last_result=1;return 1;
     }
     void receive(std::span<const uint8_t> p,double now){
@@ -124,7 +131,21 @@ public:
             return;
         }
         if(!operation_||rx!=word(operation_->packet,2)||msg!=(0xDE00|(word(operation_->packet,0)&255)))return;
-        const auto code=word(p,14);state_.last_result=code;status(p,now);
+        if(msg==0xDE07&&(word(p,6)!=word(operation_->packet,6)||word(p,8)))return;
+        const auto code=word(p,14);
+        if(msg==0xDE07){
+            const auto flags=word(p,20);
+            if(code==0&&(!(flags&8)||!(flags&16)||
+                (word(p,6)==0?(!(flags&64)||(flags&32)):
+                    ((flags&64)||bool(flags&32)!=((flags>>8)==2)))))return;
+            // A cached final reply may precede a newer DE02. Never roll status
+            // back, but accept its matching completion if current status agrees.
+            if(!status(p,now)&&(code!=0||!state_.lidar_supported||!state_.lidar_known||
+                (word(p,6)==0?(!state_.lidar_inhibited||state_.lidar_on):
+                    (state_.lidar_inhibited||state_.lidar_on!=(state_.mode==2)))))return;
+        }else status(p,now);
+        state_.last_result=code;
+        if(msg==0xDE07)state_.lidar_result=code;
         if(code==1)return;
         if(code==0&&msg==0xDE04){
             const auto id=word(operation_->packet,6);
@@ -143,7 +164,10 @@ public:
             return;
         }
         if(operation_){
-            if(now-operation_->born>40){operation_.reset();state_.last_result=9;}
+            if(now-operation_->born>40){
+                if(word(operation_->packet,0)==0xED07)state_.lidar_result=9;
+                operation_.reset();state_.last_result=9;
+            }
             else if(now-operation_->last>=1){
                 auto&p=*operation_;
                 // ICD: retries preserve the original TxSeq and every packet byte.

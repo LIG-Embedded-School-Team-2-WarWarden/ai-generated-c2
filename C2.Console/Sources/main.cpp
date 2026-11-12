@@ -1,6 +1,7 @@
 #include "c2/fcs_client.hpp"
 #include "c2/rdr_client.hpp"
 #include "rdr_control.hpp"
+#include "lidar_interlock.hpp"
 #include "rdr_live_diagnostics.hpp"
 #include "target_position_filter.hpp"
 #include "rdr_coordinate_recorder.hpp"
@@ -319,6 +320,39 @@ int main(int argc, char** argv) {
             }
         };
         uint32_t target_id{}, active{}, frame_sequence{};
+        LidarInterlock lidar_interlock;
+        auto laser_off=[&]() {
+            auto reply=client->laser(false);
+            lidar_interlock.off_reply(reply,Clock::now());
+            return reply;
+        };
+        auto prepare_output=[&]() {
+            if(!client||!lidar_interlock.begin(real_rdr->snapshot(),Clock::now())) {
+                log("LIDAR output blocked: unsupported, unknown, busy, or unresolved inhibit");
+                return false;
+            }
+            try {
+                if(real_rdr->command(0xED07,0)>1) {lidar_interlock.fail();return false;}
+                log("LIDAR ED07 OFF requested; waiting for DE07 physical stop confirmation");
+                const auto deadline=Clock::now()+std::chrono::seconds(2);
+                while(!quitting&&Clock::now()<deadline) {
+                    real_rdr->tick();
+                    const auto r=real_rdr->snapshot();
+                    if(lidar_interlock.stopped(r)) {
+                        // Recheck FCS immediately before enabling output; do not use a
+                        // status snapshot taken before the RDR stop handshake.
+                        auto status=client->query();
+                        if(!status||!(status->flags&1)||(status->flags&30)||
+                           !lidar_interlock.stopped(real_rdr->snapshot()))break;
+                        lidar_interlock.emitted(Clock::now());
+                        log("LIDAR stopped; FCS output permitted");return true;
+                    }
+                    if(!r.connected||r.last_result>1)break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                lidar_interlock.fail();log("LIDAR stop unconfirmed; FCS output blocked");return false;
+            } catch(...) {lidar_interlock.fail();throw;}
+        };
         uint64_t assigned_rdr_generation{};
         AssignmentHealth health; auto& assignment=health.state;
         unsigned logged_state=0, logged_reason=0;
@@ -333,6 +367,7 @@ int main(int argc, char** argv) {
             log("Installation positions changed: existing alignment invalid; reassign required");
         };
         Clock::time_point next_poll{}, next_log{}, move_deadline{}, next_installation_check{}, next_rdr_retry{};
+        auto logged_lidar_phase=lidar_interlock.phase();
         Clock::time_point last_assignment_cancel{};
         Clock::time_point last_fcs_status_sample{};
         bool have_fcs_busy_sample{};
@@ -393,7 +428,14 @@ int main(int argc, char** argv) {
                             };
                             response=client->point(angle(words[2]),angle(words[3]));
                         }
-                        else if(command=="laser") {input>>arg;if(arg!="on"&&arg!="off")throw std::invalid_argument("laser on|off");response=client->laser(arg=="on");laser_deadline=arg=="on"?Clock::now()+std::chrono::seconds(1):Clock::time_point{};}
+                        else if(command=="laser") {
+                            input>>arg;if(arg!="on"&&arg!="off")throw std::invalid_argument("laser on|off");
+                            if(arg=="on") {
+                                if(!prepare_output())throw std::runtime_error("LIDAR stop not confirmed; output blocked (use fcs laser off to recover)");
+                                laser_deadline=Clock::now()+std::chrono::seconds(1);
+                                response=client->laser(true);
+                            } else {response=laser_off();laser_deadline={};}
+                        }
                         else throw std::invalid_argument("unknown FCS command");
                         auto snapshot=client->snapshot();
                         auto report=nlohmann::json{{"fcs",command},{"confirmed",bool(response)},{"result",response?int(response->result):-1},{"connected",snapshot.connected}};
@@ -403,7 +445,13 @@ int main(int argc, char** argv) {
                 } catch(const std::exception& e) {std::cout<<nlohmann::json{{"rejected",e.what()}}.dump()<<std::endl;}
             }
             if(!headless&&console.ended()&&rdr_reply==RdrReply::none)break;
-            if(client&&laser_deadline!=Clock::time_point{}&&Clock::now()>=laser_deadline) {(void)client->laser(false);laser_deadline=Clock::time_point{};}
+            if(client&&laser_deadline!=Clock::time_point{}&&Clock::now()>=laser_deadline) {
+                try {
+                    auto reply=laser_off();
+                    laser_deadline=reply&&reply->result==fcs::Result::accepted&&reply->laser_state==0?
+                        Clock::time_point{}:Clock::now()+std::chrono::seconds(1);
+                }catch(const std::exception& error){log(std::string("FCS OFF retry: ")+error.what());laser_deadline=Clock::now()+std::chrono::seconds(1);}
+            }
             if (!c2_ipc_healthy(ipc) || !c2_ipc_healthy(rdr_control)) throw std::runtime_error("IPC stopped");
             if (!installation_file.empty() && Clock::now() >= next_installation_check) {
                 next_installation_check = Clock::now()+std::chrono::milliseconds(500);
@@ -449,6 +497,19 @@ int main(int argc, char** argv) {
                 next_poll = Clock::now()+std::chrono::seconds(1);
             }
             auto state = client?client->snapshot():fcs::Snapshot{};
+            if(client&&lidar_interlock.update(real_rdr->snapshot(),state,Clock::now())) {
+                try {
+                    const auto result=real_rdr->command(0xED07,1);
+                    log("LIDAR ED07 resume requested result="+std::to_string(result));
+                    if(result>1)lidar_interlock.fail();
+                }catch(const std::exception& error){lidar_interlock.fail();log(std::string("LIDAR resume failed: ")+error.what());}
+            }
+            if(logged_lidar_phase!=lidar_interlock.phase()) {
+                static constexpr const char* names[]={"idle","stopping","held","restoring","fault"};
+                logged_lidar_phase=lidar_interlock.phase();
+                log(std::string("LIDAR interlock=")+names[unsigned(logged_lidar_phase)]+(logged_lidar_phase==LidarInterlock::Phase::fault?
+                    "; check device, then acknowledge fcs laser off before recovery":""));
+            }
             const auto rdr_state=real_rdr->snapshot();
             // Installation storage is (forward,left,up); corrected coordinates
             // and GUI XYZ are (east,north,up). Rotate raw DE03 coordinates once.
@@ -626,7 +687,7 @@ int main(int argc, char** argv) {
                     } else if (request.command == 2) {
                         if (!target_id) result=gui::Result::not_assigned;
                         else {
-                            auto reply=client->laser(false);
+                            auto reply=laser_off();
                             result=command_result("EF04_OFF",reply);
                             if(result==gui::Result::success) { target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; last_assignment_cancel=Clock::now(); next_poll={}; }
                         }
@@ -638,6 +699,7 @@ int main(int argc, char** argv) {
                         else if (!target_consistent) result=gui::Result::target_pending;
                         else if ((flags&10) || demo_requested) result=gui::Result::device_busy;
                         else {
+                            if(!prepare_output())throw std::runtime_error("LIDAR stop not confirmed; demo blocked");
                             auto reply=client->demo();
                             result=command_result("EF05",reply);
                             if(result==gui::Result::success) { active=0; demo_requested=true; demo_seen=false; next_poll={}; }
