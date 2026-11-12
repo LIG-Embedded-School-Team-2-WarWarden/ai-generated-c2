@@ -651,6 +651,14 @@ int main(int argc, char** argv) {
                     }
                     else if (request.command == 6 && real_control) {
                         result=static_cast<gui::Result>(real_control->set_operating(request).result);
+                        // A cold RDR boot retains optical inhibition. Starting
+                        // surveillance must be usable without an assigned target.
+                        if(result==gui::Result::success&&request.target_id==1&&client&&
+                           rdr_state.lidar_inhibited&&!target_id&&!demo_requested&&
+                           lidar_interlock.phase()==LidarInterlock::Phase::idle) {
+                            (void)command_result("EF04_OFF_INITIALIZE",laser_off());
+                            next_poll={};
+                        }
                         if (!real_control->operating(rdr_state)) position_filter.reset();
                     }
                     else if (request.fcs_id != 1 || request.rdr_id != 1) result=gui::Result::invalid_request;
@@ -688,12 +696,11 @@ int main(int argc, char** argv) {
                             if(result==gui::Result::success) { target_id=request.target_id; position_guard.start({found->east,found->north,found->up},rdr_state.targets.at(uint16_t(found->id)).seen); assigned_rdr_generation=observation.generation; health.start(); active=0; demo_requested=demo_seen=false; move_deadline=Clock::now()+std::chrono::seconds(60); next_poll={}; }
                         }
                     } else if (request.command == 2) {
-                        if (!target_id) result=gui::Result::not_assigned;
-                        else {
-                            auto reply=laser_off();
-                            result=command_result("EF04_OFF",reply);
-                            if(result==gui::Result::success) { target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; last_assignment_cancel=Clock::now(); next_poll={}; }
-                        }
+                        // OFF/recovery is independent of target assignment.
+                        auto reply=laser_off();
+                        result=command_result("EF04_OFF",reply);
+                        if(result==gui::Result::success&&reply->laser_state!=0)result=gui::Result::device_fault;
+                        if(result==gui::Result::success) { target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; last_assignment_cancel=Clock::now(); next_poll={}; }
                     } else if (request.command == 3) {
                         if (!target_id || target_id!=request.target_id) result=gui::Result::not_assigned;
                         else if (assignment!=2) result=health.reason!=gui::Result::success?health.reason:gui::Result::alignment_required;

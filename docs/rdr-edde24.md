@@ -58,7 +58,7 @@ ECS는 PREDICTED의 같은 ID·좌표·관측 자세를 보존합니다. 잘못�
 ECS가 해당 객체의 관측 자세로 XYZ를 한 번 회전해 동쪽/북쪽/위쪽 좌표와 방향각을 계산합니다. 현재 모터 상태를 객체의 관측 자세로 대체하지 않습니다.
 장착 회전 단위행렬·장착 이동량 0을 가정하며 실장비 장착 기하·좌표 정확도 검증은 별도입니다.
 
-[RDR-ECS ICD](https://ligproject2team.atlassian.net/wiki/spaces/MFS/pages/37355617/RDR-ECS+ICD)의 확인된 v8에는 아직 26–31바이트 패딩, `BASE_PAN_APPROX`, PAN 영점 2000tick 설명이 남아 있습니다.
-현재 구현은 위 사용자 확정 계약을 우선합니다. 같은 32바이트라도 구형 보정 XYZ와 원본 XYZ의 의미를 자동 구분할 수 없으므로 송신측 적용 버전과 실제 패킷을 대조해야 합니다.
+[RDR-ECS ICD v13](https://ligproject2team.atlassian.net/wiki/spaces/MFS/pages/37355617/RDR-ECS+ICD)에 위 TrackState·원본 좌표·관측 각도 계약을 반영했습니다.
+RDR 송신 펌웨어도 이 계약을 적용해야 합니다. 같은 32바이트라도 구형 보정 XYZ와 원본 XYZ의 의미를 자동 구분할 수 없으므로 송신측 적용 버전과 실제 패킷을 대조해야 합니다.
 팬·틸트는 signed int16, 0.1도 단위이고 -32768은 미상입니다.
 현재 보드에 고각 설정 명령은 없습니다. [장비 ICD](device-icd.md)를 참고하세요.
