@@ -81,6 +81,7 @@
       <PreprocessorDefinitions>main=fcs_client_entry;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="Sources\assignment_position_guard.cpp" />
+    <ClCompile Include="Sources\lidar_interlock.cpp" />
     <ClCompile Include="Sources\main.cpp" />
     <ClCompile Include="Sources\gui_v3.cpp" />
     <ClCompile Include="Sources\rdr_live_diagnostics.cpp" />
