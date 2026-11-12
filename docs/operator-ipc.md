@@ -75,7 +75,8 @@ positionX@28, positionY@32, positionZ@36은 float(m)입니다. 응답은 request
 | 번호 | 명령 | 값과 처리 |
 |---|---|---|
 | 0 | GetStatus | 현재 상태 조회 |
-| 1~3 | Assign / Cancel / Active | 기존 계약 유지. 감시 정지 시 할당 불가 |
+| 1 / 3 | Assign / Active | 기존 계약 유지. 감시 정지 시 할당 불가 |
+| 2 | Cancel | 대상 할당 없이도 FCS OFF·억제 복구 가능. 수락·현재 OFF 확인 후 Success |
 | 4 | SetRdrElevation | targetId=0~900, 0.1도 단위. 현재 ED/DE 보드는 명령이 없어 NotSupported |
 | 5 | SetAssetPosition | RDR: rdrId=1/fcsId=0, FCS: rdrId=0/fcsId=1. 유한한 XYZ 필요 |
 | 6 | SetRdrOperating | rdrId=fcsId=1, targetId=0 정지/1 구동 |
@@ -96,7 +97,7 @@ GUI 좌표는 내부 설치 좌표 (forward,left,up)=(GUI Y,-GUI X,GUI Z)로 변
 GUI 객체 목록의 각도는 RDR 기준, FCS 패널의 각도는 FCS 기준이므로 장비 위치가 다르면 두 숫자는 달라질 수 있습니다.
 
 구동 요청은 ED03 보고 허용 후 DE02에서 reporting=1을 확인하고 ED06 시작을 보냅니다.
-Success 응답은 요청 접수이며 실제 구동 완료는 후속 프레임의 isOperating으로 확인합니다.
+Success 응답은 요청 접수이며 감시 구동 상태는 후속 프레임의 isOperating으로 확인합니다. 이 값은 광학 방출 재개 완료를 뜻하지 않습니다. 억제 기동 시 할당·시연 없는 초기 구동 요청은 FCS OFF 확인 후 라이다 재개도 시도합니다. 상세 조건과 복구는 [라이다 방출 연동](lidar-interlock.md)을 참고하세요.
 정지 요청은 ED06 정지를 보내고 진행 중인 GUI 시작 단계를 취소합니다. CLI 정지도 GUI 시작 단계를 취소합니다.
 통신 재연결만으로 감시를 자동 재개하지 않습니다. CLI `rdr` 명령과 확장 명령10~17은 유지합니다.
 

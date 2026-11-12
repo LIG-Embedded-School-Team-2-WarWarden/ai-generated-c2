@@ -14,6 +14,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'simulators'))
 from devices import Devices
+from test_station import Gui, valid_count
 
 
 class Probe(Devices):
@@ -81,7 +82,13 @@ def wait_for(predicate, timeout=6):
 def run(executable, scenario):
     board = Probe()
     setattr(board, scenario, True) if scenario != 'normal' else None
+    boot = scenario.startswith('boot_') or scenario == 'gui_off_no_target'
+    if boot:
+        board.lidar_inhibited = True
+        board.manual_off_busy = scenario == 'boot_off_busy'
+        board.manual_off_drop = scenario == 'boot_off_drop'
     process = None
+    gui = None
     try:
         with tempfile.TemporaryDirectory(prefix='c2-lidar-', ignore_cleanup_errors=True) as directory:
             config = json.loads((ROOT / 'configs/team-demo.json').read_text(encoding='utf-8'))
@@ -90,8 +97,9 @@ def run(executable, scenario):
                 config[name]['peer'] = {'ip': '127.0.0.1', 'port': port}
             path = Path(directory) / 'config.json'
             path.write_text(json.dumps(config), encoding='utf-8')
+            suffix = '_lidar_' + uuid.uuid4().hex
             process = subprocess.Popen([str(executable), '--config', str(path),
-                '--ipc-suffix', '_lidar_' + uuid.uuid4().hex,
+                '--ipc-suffix', suffix,
                 '--event-log', str(Path(directory) / 'events.log')],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -110,6 +118,27 @@ def run(executable, scenario):
                 return output.get(timeout=6)
             wait_for(lambda: ask('rdr status')['connected'])
             wait_for(lambda: ask('fcs status')['connected'])
+            if boot:
+                gui = Gui(suffix)
+                assert valid_count(gui.frame()) == 0
+                if scenario == 'gui_off_no_target':
+                    assert gui.command(2) == 0
+                    wait_for(lambda: not board.lidar_inhibited)
+                    assert board.mode == 0  # Recovery does not start surveillance.
+                assert gui.command(6, target=1) == 0
+                wait_for(lambda: not board.lidar_inhibited)
+                gui.wait(lambda frame: valid_count(frame) == 10)
+                if scenario in ('boot_off_busy', 'boot_off_drop'):
+                    assert board.off_requests >= 2, board.events
+                assert not any(e[:2] == ('fcs', 1) for e in board.events), board.events
+                assert board.events.index(('fcs', 0, True)) < board.events.index(('rdr', 1))
+                assert board.error is None, board.error
+                gui.close(); gui = None
+                process.stdin.write('quit\n'); process.stdin.flush()
+                process.wait(timeout=8)
+                assert process.returncode == 0, process.stderr.read()
+                print('PASS: lidar interlock', scenario)
+                return
             ask('rdr start')
             wait_for(lambda: ask('rdr status')['mode'] == 2)
             reply = ask('fcs laser on')
@@ -163,6 +192,8 @@ def run(executable, scenario):
             assert process.returncode == 0, process.stderr.read()
             print('PASS: lidar interlock', scenario)
     finally:
+        if gui:
+            gui.close()
         if process and process.poll() is None:
             process.kill();process.wait()
         board.close()
@@ -173,5 +204,6 @@ if __name__ == '__main__':
     parser.add_argument('--console', type=Path, required=True)
     args = parser.parse_args()
     for case in ('normal', 'legacy', 'bad_stop', 'drop_stop', 'drop_on_reply',
-                 'manual_off_busy', 'manual_off_drop', 'manual_off_wrong_state', 'lost_stop_ack'):
+                 'manual_off_busy', 'manual_off_drop', 'manual_off_wrong_state', 'lost_stop_ack',
+                 'boot_inhibited', 'boot_off_busy', 'boot_off_drop', 'gui_off_no_target'):
         run(args.console.resolve(), case)
