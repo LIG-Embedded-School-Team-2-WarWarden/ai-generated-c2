@@ -322,8 +322,12 @@ int main(int argc, char** argv) {
         uint32_t target_id{}, active{}, frame_sequence{};
         LidarInterlock lidar_interlock;
         auto laser_off=[&]() {
+            // Keep retrying even when an explicit CLI/GUI OFF fails or throws.
+            laser_deadline=Clock::now()+std::chrono::seconds(1);
             auto reply=client->laser(false);
             lidar_interlock.off_reply(reply,Clock::now());
+            if(reply&&reply->result==fcs::Result::accepted&&reply->laser_state==0)
+                laser_deadline={};
             return reply;
         };
         auto prepare_output=[&]() {
@@ -334,7 +338,7 @@ int main(int argc, char** argv) {
             try {
                 if(real_rdr->command(0xED07,0)>1) {lidar_interlock.fail();return false;}
                 log("LIDAR ED07 OFF requested; waiting for DE07 physical stop confirmation");
-                const auto deadline=Clock::now()+std::chrono::seconds(2);
+                const auto deadline=Clock::now()+std::chrono::duration<double>(c2::rdr::lidar_command_timeout_seconds);
                 while(!quitting&&Clock::now()<deadline) {
                     real_rdr->tick();
                     const auto r=real_rdr->snapshot();
@@ -350,6 +354,7 @@ int main(int argc, char** argv) {
                     if(!r.connected||r.last_result>1)break;
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
+                real_rdr->tick(); // Expire the transport operation at the same deadline.
                 lidar_interlock.fail();log("LIDAR stop unconfirmed; FCS output blocked");return false;
             } catch(...) {lidar_interlock.fail();throw;}
         };
@@ -434,7 +439,7 @@ int main(int argc, char** argv) {
                                 if(!prepare_output())throw std::runtime_error("LIDAR stop not confirmed; output blocked (use fcs laser off to recover)");
                                 laser_deadline=Clock::now()+std::chrono::seconds(1);
                                 response=client->laser(true);
-                            } else {response=laser_off();laser_deadline={};}
+                            } else response=laser_off();
                         }
                         else throw std::invalid_argument("unknown FCS command");
                         auto snapshot=client->snapshot();
@@ -447,10 +452,8 @@ int main(int argc, char** argv) {
             if(!headless&&console.ended()&&rdr_reply==RdrReply::none)break;
             if(client&&laser_deadline!=Clock::time_point{}&&Clock::now()>=laser_deadline) {
                 try {
-                    auto reply=laser_off();
-                    laser_deadline=reply&&reply->result==fcs::Result::accepted&&reply->laser_state==0?
-                        Clock::time_point{}:Clock::now()+std::chrono::seconds(1);
-                }catch(const std::exception& error){log(std::string("FCS OFF retry: ")+error.what());laser_deadline=Clock::now()+std::chrono::seconds(1);}
+                    (void)laser_off();
+                }catch(const std::exception& error){log(std::string("FCS OFF retry: ")+error.what());}
             }
             if (!c2_ipc_healthy(ipc) || !c2_ipc_healthy(rdr_control)) throw std::runtime_error("IPC stopped");
             if (!installation_file.empty() && Clock::now() >= next_installation_check) {

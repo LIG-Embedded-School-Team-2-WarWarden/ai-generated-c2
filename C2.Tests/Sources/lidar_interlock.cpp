@@ -52,5 +52,30 @@ int lidar_interlock_entry(){
     require(s.state().last_result==1); // Even latest OFF status needs a DE07 completion.
     c2::rdr::word(response,2,2);s.receive(response,1.3);
     require(s.state().last_result==0&&s.state().lidar_inhibited&&!s.state().lidar_on);
+    // ED07 expires at two seconds, stops retransmitting, and permits a new
+    // recovery request without waiting for the general 40-second timeout.
+    c2::rdr::Session timeout;
+    timeout.connect(0);auto connect=timeout.take().at(0);
+    auto ack=connect;c2::rdr::word(ack,0,0xDE01);c2::rdr::word(ack,2,1);
+    c2::rdr::word(ack,4,c2::rdr::word(connect,2));c2::rdr::word(ack,20,0x259);
+    timeout.receive(ack,.01);require(timeout.command(0xED07,0,0,1)==1);
+    const auto original=timeout.take().at(0);
+    timeout.tick(2);require(timeout.take().at(0)==original);
+    timeout.tick(3);
+    require(timeout.state().lidar_result==9&&timeout.state().last_result==9);
+    for(const auto& packet:timeout.take())require(c2::rdr::word(packet,0)!=0xED07);
+    require(timeout.command(0xED07,1,0,3)==1);auto resume=timeout.take().at(0);
+    require(c2::rdr::word(resume,2)!=c2::rdr::word(original,2));
+    ack=original;c2::rdr::word(ack,0,0xDE07);c2::rdr::word(ack,2,2);
+    c2::rdr::word(ack,4,c2::rdr::word(original,2));c2::rdr::word(ack,20,0x259);
+    timeout.receive(ack,3.01);require(timeout.state().lidar_result==1);
+    ack=resume;c2::rdr::word(ack,0,0xDE07);c2::rdr::word(ack,2,3);
+    c2::rdr::word(ack,4,c2::rdr::word(resume,2));c2::rdr::word(ack,20,0x239);
+    timeout.receive(ack,3.02);require(timeout.state().lidar_result==0);
+    require(timeout.command(0xED07,0,0,4)==1);auto late=timeout.take().at(0);
+    c2::rdr::word(late,0,0xDE07);c2::rdr::word(late,4,c2::rdr::word(late,2));
+    c2::rdr::word(late,2,4);c2::rdr::word(late,20,0x259);
+    timeout.receive(late,6);require(timeout.state().lidar_result==9);
+    require(timeout.command(0xED07,1,0,6)==1);
     return 0;
 }

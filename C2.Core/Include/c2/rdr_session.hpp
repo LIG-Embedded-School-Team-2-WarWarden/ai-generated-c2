@@ -13,6 +13,7 @@
 #include <vector>
 #include <algorithm>
 namespace c2::rdr {
+inline constexpr double lidar_command_timeout_seconds=2.0;
 using Packet=std::array<uint8_t,24>;
 inline uint16_t word(std::span<const uint8_t> p,unsigned n){return uint16_t((unsigned(p[n])<<8)|p[n+1]);}
 inline void word(Packet&p,unsigned n,uint16_t v){p.at(n)=uint8_t(v>>8);p.at(n+1)=uint8_t(v);}
@@ -47,6 +48,14 @@ class Session {
     std::deque<uint16_t> issued_;
     std::vector<Packet> outgoing_;
     State state_;
+    void expire_operation(double now){
+        if(!operation_)return;
+        const bool lidar=word(operation_->packet,0)==0xED07;
+        if(now-operation_->born>=(lidar?lidar_command_timeout_seconds:40.0)){
+            if(lidar)state_.lidar_result=9;
+            operation_.reset();state_.last_result=9;
+        }
+    }
     Packet make(uint16_t msg,uint16_t a=0,uint16_t b=0){
         Packet p{};word(p,0,msg);word(p,2,++sequence_);word(p,6,a);word(p,8,b);
         word(p,10,uint16_t(token_>>16));word(p,12,uint16_t(token_));
@@ -81,6 +90,7 @@ public:
     uint16_t connect(double now){wanted_=true;if(state_.connected)return 0;if(!hello_)fresh_session(now);return 1;}
     uint16_t command(uint16_t msg,uint16_t a,uint16_t b,double now){
         if(!state_.connected)return 3;
+        expire_operation(now);
         if((msg!=0xED03&&msg!=0xED04&&msg!=0xED06&&msg!=0xED07)||
            ((msg==0xED03||msg==0xED06||msg==0xED07)&&a>1)||(msg==0xED04&&(!a||b>1))||
            (msg==0xED07&&b))return 2;
@@ -116,6 +126,7 @@ public:
             return;
         }
         if(p.size()!=24||token(p)!=token_||word(p,14)>8||word(p,22))return;
+        expire_operation(now); // A late completion cannot revive an expired request.
         if(msg==0xDE01&&hello_&&rx==word(hello_->packet,2)){
             if(word(p,14)==0&&status(p,now)){state_.connected=true;state_.last_result=0;hello_.reset();next_poll_=now;}
             return;
@@ -163,12 +174,9 @@ public:
             if(hello_&&now-hello_->last>=1){outgoing_.push_back(hello_->packet);hello_->last=now;}
             return;
         }
+        expire_operation(now);
         if(operation_){
-            if(now-operation_->born>40){
-                if(word(operation_->packet,0)==0xED07)state_.lidar_result=9;
-                operation_.reset();state_.last_result=9;
-            }
-            else if(now-operation_->last>=1){
+            if(now-operation_->last>=1){
                 auto&p=*operation_;
                 // ICD: retries preserve the original TxSeq and every packet byte.
                 outgoing_.push_back(p.packet);p.last=now;
