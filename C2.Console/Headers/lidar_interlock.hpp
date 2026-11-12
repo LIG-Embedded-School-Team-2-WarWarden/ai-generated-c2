@@ -30,7 +30,7 @@ public:
     // True requests ED07=1 once. FE02 must be newer than the output/OFF command.
     bool update(const c2::rdr::State& r,const c2::fcs::Snapshot& f,Clock::time_point now) {
         if(phase_==Phase::restoring){
-            if(!r.connected||r.generation!=generation_||now-started_>std::chrono::seconds(2)||
+            if(!r.connected||r.generation!=generation_||now-started_>=std::chrono::duration<double>(c2::rdr::lidar_command_timeout_seconds)||
                r.lidar_result>1)fail();
             else if(r.lidar_request==1&&r.lidar_result==0&&r.lidar_supported&&
                     r.lidar_known&&!r.lidar_inhibited&&r.lidar_on==(r.mode==2))phase_=Phase::idle;

@@ -20,7 +20,15 @@ class Probe(Devices):
     def __init__(self):
         self.events = []
         self.legacy = self.bad_stop = self.drop_stop = self.drop_on_reply = False
+        self.manual_off_busy = self.manual_off_drop = self.manual_off_wrong_state = False
+        self.lost_stop_ack = False
+        self.off_requests = 0
         super().__init__()
+
+    def _send_rdr(self, fields):
+        if self.lost_stop_ack and fields[0] == 0xDE07 and fields[3] == 0:
+            return  # The device applied OFF, but every completion reply is lost.
+        super()._send_rdr(fields)
 
     def _packet(self, kind, *args, **kwargs):
         p = super()._packet(kind, *args, **kwargs)
@@ -46,9 +54,19 @@ class Probe(Devices):
             if value and not self.lidar_inhibited:
                 raise AssertionError('FCS output preceded physical lidar inhibition')
             if value and self.drop_on_reply:
-                self.laser_until = now + 1
+                self.laser_until = now + 60
                 return
+            if not value:
+                self.off_requests += 1
+                if self.off_requests == 1 and (self.manual_off_busy or self.manual_off_drop or self.manual_off_wrong_state):
+                    if not self.manual_off_drop:
+                        self.fcs_tx = (self.fcs_tx + 1) & 65535
+                        self.fcs.sendto(struct.pack('!6H', 0xFE04, self.fcs_tx,
+                            struct.unpack_from('!H', raw, 2)[0], int(self.manual_off_busy), 1, 0), peer)
+                    return
         super()._fcs_request(raw, peer, now)
+        if kind == 0xEF04 and struct.unpack_from('!H', raw, 6)[0] == 1:
+            self.laser_until = now + 60  # Remain ON until ECS successfully sends OFF.
 
 
 def wait_for(predicate, timeout=6):
@@ -95,7 +113,19 @@ def run(executable, scenario):
             ask('rdr start')
             wait_for(lambda: ask('rdr status')['mode'] == 2)
             reply = ask('fcs laser on')
-            if scenario in ('legacy', 'bad_stop', 'drop_stop'):
+            if scenario == 'lost_stop_ack':
+                assert 'rejected' in reply, reply
+                assert board.lidar_inhibited
+                assert not any(e[:2] == ('fcs', 1) for e in board.events)
+                stop_count = board.events.count(('rdr', 0))
+                # Recovery must complete well before the former 40-second timeout.
+                recovered_at = time.monotonic()
+                assert ask('fcs laser off')['result'] == 0
+                wait_for(lambda: not board.lidar_inhibited, timeout=5)
+                assert time.monotonic() - recovered_at < 5
+                assert board.events.count(('rdr', 0)) == stop_count, board.events
+                assert ('rdr', 1) in board.events
+            elif scenario in ('legacy', 'bad_stop', 'drop_stop'):
                 assert 'rejected' in reply, reply
                 assert not any(e[:2] == ('fcs', 1) for e in board.events), board.events
                 time.sleep(.3)
@@ -103,7 +133,15 @@ def run(executable, scenario):
             else:
                 assert reply['result'] == (-1 if scenario == 'drop_on_reply' else 0), reply
                 assert board.lidar_inhibited
+                if scenario.startswith('manual_off_'):
+                    off = ask('fcs laser off')
+                    expected = {'manual_off_busy': 1, 'manual_off_drop': -1, 'manual_off_wrong_state': 0}[scenario]
+                    assert off['result'] == expected, off
+                    assert board.lidar_inhibited
                 wait_for(lambda: not board.lidar_inhibited)
+                assert board.laser_until <= time.monotonic()
+                if scenario.startswith('manual_off_'):
+                    assert board.off_requests >= 2, board.events
                 relevant = [e[:2] for e in board.events]
                 pause = relevant.index(('rdr', 0))
                 on = relevant.index(('fcs', 1))
@@ -134,5 +172,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--console', type=Path, required=True)
     args = parser.parse_args()
-    for case in ('normal', 'legacy', 'bad_stop', 'drop_stop', 'drop_on_reply'):
+    for case in ('normal', 'legacy', 'bad_stop', 'drop_stop', 'drop_on_reply',
+                 'manual_off_busy', 'manual_off_drop', 'manual_off_wrong_state', 'lost_stop_ack'):
         run(args.console.resolve(), case)
