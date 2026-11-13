@@ -166,6 +166,9 @@ def run(executable, scenario):
                 return
             ask('rdr start')
             wait_for(lambda: ask('rdr status')['mode'] == 2)
+            # Mode may be published before the startup command completes.
+            wait_for(lambda: ask('rdr status')['result'] == 0)
+            wait_for(lambda: ask('fcs status').get('flags') == 1)
             if scenario == 'legacy':
                 ask('rdr report on')
                 wait_for(lambda: ask('rdr status')['reporting'])
@@ -200,7 +203,7 @@ def run(executable, scenario):
                 time.sleep(.3)
                 assert not any(e == ('rdr', 1) for e in board.events), board.events
             else:
-                assert reply['result'] == (-1 if scenario == 'drop_on_reply' else 0), reply
+                assert reply.get('result') == (-1 if scenario == 'drop_on_reply' else 0), reply
                 assert board.lidar_inhibited
                 if scenario.startswith('manual_off_'):
                     off = ask('fcs laser off')

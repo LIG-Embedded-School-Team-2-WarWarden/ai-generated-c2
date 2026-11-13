@@ -100,6 +100,9 @@ def main():
             assert cleared['observation'] == 'change', cleared
             assert response(2, 1001)[4] == 0
             eventually(lambda: response(7), lambda r: (r[4], r[8], r[9]) == (0, 0, 1))
+            # FCS completion is not RDR reacquisition. Wait for fresh objects
+            # before testing ordinary installation-coordinate edits.
+            gui.wait(lambda frame: valid_count(frame) == 10)
 
             # Target 1001 is fixed at base (east,north,up)=(-1.4,2.8,.35).
             # These independent angle fixtures cover each installation offset,

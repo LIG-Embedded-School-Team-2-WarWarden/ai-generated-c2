@@ -25,10 +25,20 @@ public:
     // retained positions with valid=false/status=4 paused or 5 reacquiring.
     std::vector<CorrectedTarget> update(const State& r,std::vector<CorrectedTarget>& control,
         BasePoint origin,double now,bool resume_confirmed) {
-        if(!active_)return control;
+        if(!active_){
+            // Display-cache lifetime must never bypass a physical inhibit.
+            if(r.lidar_inhibited)for(auto& p:control){p.valid=false;p.status=2;}
+            return control;
+        }
         if(!r.connected||!r.reporting||r.mode!=2||r.generation!=generation_||
-           origin.east!=origin_.east||origin.north!=origin_.north||origin.up!=origin_.up||
-           !std::isfinite(now)||now<started_) {reset();return control;}
+           !std::isfinite(now)||now<started_) {
+            reset();for(auto& p:control){p.valid=false;p.status=2;}return control;
+        }
+        if(origin.east!=origin_.east||origin.north!=origin_.north||origin.up!=origin_.up){
+            // Discard coordinates in the old installation frame, not the pause
+            // gate or the evidence of observations already received after resume.
+            held_.clear();origin_=origin;
+        }
         if(!resumed_flag_&&resume_confirmed&&r.lidar_supported&&r.lidar_known&&
            !r.lidar_inhibited&&r.lidar_on) {
             if(now-started_>=pause_limit_s)held_.clear();
@@ -52,7 +62,9 @@ public:
         for(const auto& [id,last]:held_) {
             auto p=last;p.valid=false;p.status=resumed_flag_?5:4;display.push_back(p);
         }
-        for(const auto& p:control) if(p.valid&&!held_.contains(p.id)&&display.size()<10)display.push_back(p);
+        // Preserve ordinary LOST records in IPC; only statuses 4/5 retain a
+        // visible position when invalid. Consumers still receive loss updates.
+        for(const auto& p:control) if(!held_.contains(p.id)&&display.size()<10)display.push_back(p);
         return display;
     }
 };

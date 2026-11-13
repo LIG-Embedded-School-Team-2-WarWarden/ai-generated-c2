@@ -1,5 +1,6 @@
 #include "observation_retention.hpp"
 #include "protocol.hpp"
+#include "assignment_health.hpp"
 #include <stdexcept>
 static void check(bool b){if(!b)throw std::runtime_error("observation retention contract failed");}
 int observation_retention_entry(){
@@ -32,13 +33,34 @@ int observation_retention_entry(){
     check(display.size()==2&&display[0].id==7&&display[0].status==5&&display[1].id==8);
     control={fresh};display=memory.update(r,control,{},11,true);check(display.size()==1&&display[0].id==8);
     memory.begin(r,{fresh},{},12);control={fresh};display=memory.update(r,control,{},22,false);
-    check(display.empty()&&!control[0].valid); // No unbounded ghost display.
+    check(display.size()==1&&display[0].status==2&&!display[0].valid&&!control[0].valid); // Ordinary LOST, no ghost display.
     memory.begin(r,{fresh},{},23);++r.generation;control.clear();check(memory.update(r,control,{},24,false).empty());
     memory.begin(r,{fresh},{},25);control.clear();check(memory.update(r,control,{1,0,0},26,false).empty());
     memory.begin(r,{fresh},{},27);r.connected=false;check(memory.update(r,control,{},28,false).empty());
     r.connected=true;memory.begin(r,{fresh},{},29);r.mode=0;check(memory.update(r,control,{},30,false).empty());
     r.mode=2;memory.begin(r,{fresh},{},31);control.clear();
     check(memory.update(r,control,{},41,true).empty()); // Exact pause boundary also expires.
+    // Moving the installation clears only display coordinates, not the gate.
+    r.lidar_inhibited=true;r.lidar_on=false;memory.begin(r,{fresh},{},42);
+    control={fresh};display=memory.update(r,control,{.01,0,0},42.1,false);
+    check(display.size()==1&&display[0].status==2&&!display[0].valid&&!control[0].valid);
+    control={fresh};display=memory.update(r,control,{.01,0,0},42.2,false);check(!control[0].valid);
+    r.lidar_inhibited=false;r.lidar_on=true;
+    control={fresh};memory.update(r,control,{.01,0,0},43,true);check(!control[0].valid);
+    r.targets[8].seen=43.1;control={fresh};memory.update(r,control,{.01,0,0},43.2,true);check(control[0].valid);
+    control={fresh};memory.update(r,control,{.02,0,0},43.3,true);check(control[0].valid);
+    r.targets[8].seen=43.4;control={fresh};memory.update(r,control,{.02,0,0},43.5,true);check(control[0].valid);
+    // Even a reset/initial display cache cannot advertise inhibited data.
+    memory.reset();r.lidar_inhibited=true;control={fresh};memory.update(r,control,{},44,false);check(!control[0].valid);
+    AssignmentHealth health;health.start();
+    health.update(true,true,true,true,true,false,false,false);check(health.state==2);
+    health.observation_paused();health.update(true,true,false,false,true,false,true,false);check(health.state==4);
+    health.update(true,true,true,true,true,false,false,false);
+    check(health.state==3&&health.reason==c2::ipc::Result::alignment_required);
+    health.start();health.update(true,true,true,true,true,false,false,false);check(health.state==2);
+    // Ordinary short data gaps still recover without an optical-pause latch.
+    health.update(true,true,false,false,true,false,false,false);
+    health.update(true,true,true,true,true,false,false,false);check(health.state==2);
     // ABI extension cannot accidentally advertise retained points as valid.
     c2::ipc::Frame frame;frame.payload.target_count=1;frame.payload.targets[0].id=7;
     frame.payload.targets[0].status=4;frame.payload.targets[0].x=1;
