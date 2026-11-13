@@ -321,6 +321,7 @@ int main(int argc, char** argv) {
             }
         };
         uint32_t target_id{}, active{}, frame_sequence{};
+        AssignmentHealth health; auto& assignment=health.state;
         LidarInterlock lidar_interlock;
         c2::rdr::ObservationRetention observation_retention;
         auto laser_off=[&]() {
@@ -341,6 +342,7 @@ int main(int argc, char** argv) {
             const auto pause_state=real_rdr->snapshot();
             observation_retention.begin(pause_state,position_filter.update(pause_state,pause_origin),pause_origin,c2::rdr::seconds());
             position_filter.reset();
+            health.observation_paused();
             try {
                 if(real_rdr->command(0xED07,0)>1) {lidar_interlock.fail();return false;}
                 log("LIDAR ED07 OFF requested; waiting for DE07 physical stop confirmation");
@@ -365,7 +367,6 @@ int main(int argc, char** argv) {
             } catch(...) {lidar_interlock.fail();throw;}
         };
         uint64_t assigned_rdr_generation{};
-        AssignmentHealth health; auto& assignment=health.state;
         unsigned logged_state=0, logged_reason=0;
         double commanded_pan{}, commanded_tilt{};
         AssignmentPositionGuard position_guard(c2::rdr::gui_noise_axes(
@@ -601,7 +602,7 @@ int main(int argc, char** argv) {
             }
             if (demo_requested && current) {
                 if (flags&8) demo_seen=true;
-                if (demo_seen && ready && assignment==2 && !(flags&14)) { active=1; demo_requested=false; }
+                if (demo_seen && ready && !(flags&14)) { active=1; demo_requested=false; }
             }
             gui::PipeCommand request; uint64_t ticket;
             void* request_ipc=ipc;
@@ -649,8 +650,9 @@ int main(int argc, char** argv) {
                                         {-position[1],position[0],position[2]});
                                     filtered_targets=position_filter.update(rdr_state,
                                         {-position[1],position[0],position[2]});
-                                    observation_retention.reset();
-                                    display_targets=filtered_targets;
+                                    display_targets=observation_retention.update(rdr_state,filtered_targets,
+                                        {-position[1],position[0],position[2]},c2::rdr::seconds(),
+                                        lidar_interlock.phase()==LidarInterlock::Phase::idle);
                                     observation=observation_snapshot(rdr_state,filtered_targets);
                                 }
                             }

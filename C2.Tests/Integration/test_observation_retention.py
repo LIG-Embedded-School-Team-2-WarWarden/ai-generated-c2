@@ -79,7 +79,7 @@ def run(executable, new_identity=False):
             if new_identity:
                 after=target_records(gui.wait(lambda f: any(t[0]==2001 and t[9] for t in target_records(f)),timeout=7))
                 assert not any(t[0] in ids and t[9] for t in after)
-                gui.wait(lambda f: all(t[0] not in ids for t in target_records(f)),timeout=5)
+                gui.wait(lambda f: all(t[0] not in ids or (not t[9] and t[8] not in (4,5)) for t in target_records(f)),timeout=5)
             else:
                 after=target_records(gui.wait(lambda f: valid_count(f)==10))
                 assert {t[0] for t in after}==ids and all(t[8]==0 for t in after)
