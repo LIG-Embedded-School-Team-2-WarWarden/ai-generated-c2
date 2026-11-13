@@ -9,9 +9,17 @@ public:
     using Clock=std::chrono::steady_clock;
     enum class Phase { idle, stopping, held, restoring, fault };
     Phase phase() const { return phase_; }
+    enum class Block { none, disconnected, unsupported, unknown, recovery_required, busy };
+    Block block_reason(const c2::rdr::State& r) const {
+        if(!r.connected)return Block::disconnected;
+        if(!r.lidar_supported)return Block::unsupported;
+        if(!r.lidar_known)return Block::unknown;
+        if(phase_!=Phase::idle||r.lidar_inhibited)return Block::recovery_required;
+        if(r.last_result==1)return Block::busy;
+        return Block::none;
+    }
     bool begin(const c2::rdr::State& r,Clock::time_point now) {
-        if(phase_!=Phase::idle||!r.connected||!r.lidar_supported||!r.lidar_known||
-           r.lidar_inhibited||r.last_result==1)return false;
+        if(block_reason(r)!=Block::none)return false;
         generation_=r.generation;phase_=Phase::stopping;started_=now;
         seen_emission_=off_confirmed_=false;return true;
     }

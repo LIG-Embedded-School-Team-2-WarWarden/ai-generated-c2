@@ -23,6 +23,15 @@ struct GuiDriver {
 };
 int gui_v3_entry() {
     namespace gui=c2::ipc;
+    for(unsigned code=15;code<=23;++code) {
+        gui::PipeResponse response;response.command=3;response.result=code;
+        gui::PipeResponse parsed_response;
+        check(gui::deserialize(gui::serialize(response),parsed_response) && parsed_response.result==code,
+            "optical interlock diagnostic response roundtrip");
+    }
+    gui::PipeResponse invalid_response;invalid_response.result=24;
+    gui::PipeResponse parsed_response;
+    check(!gui::deserialize(gui::serialize(invalid_response),parsed_response),"reject undefined result");
     gui::Frame frame;
     frame.payload.rdr_count=frame.payload.fcs_count=1;
     frame.payload.rdr.azimuth=150.3f;frame.payload.rdr.elevation=12.3f;

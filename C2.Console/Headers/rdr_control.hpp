@@ -20,6 +20,7 @@ template<class Driver> class RdrControl {
     StartPhase start_phase_{StartPhase::none};
     uint64_t start_generation_{};
     bool stop_requested_{};
+    bool start_confirmed_{true};
     static uint32_t result(uint16_t code) {
         switch(code){case 0:return 0;case 1:return 7;case 2:case 6:return 1;
         case 3:return 2;case 4:return 12;case 9:return 13;default:return 6;}
@@ -55,8 +56,9 @@ public:
         return operating(driver_.snapshot());
     }
     bool operating(const c2::rdr::State& state) const {
-        return state.connected && state.mode==2 && state.reporting && !stop_requested_;
+        return state.connected && state.mode==2 && state.reporting && !stop_requested_ && start_confirmed_;
     }
+    void confirm_start(bool confirmed) { start_confirmed_=confirmed; }
     void cancel_start() { start_phase_=StartPhase::none; }
     // GUI v3 acknowledges acceptance; actual completion is published in isOperating.
     c2::ipc::PipeResponse set_operating(const c2::ipc::PipeCommand& q) {
