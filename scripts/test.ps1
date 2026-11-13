@@ -5,6 +5,8 @@ Push-Location $root
 try {
     & "./x64/$Configuration/C2.Tests.exe"
     if($LASTEXITCODE){throw 'Binary ICD unit tests failed.'}
+    python ./C2.Tests/Integration/test_observation_retention.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw 'Observation retention scenarios failed.'}
     python ./C2.Tests/Integration/test_lidar_interlock.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Lidar optical interlock scenarios failed.'}
     python ./C2.Tests/Integration/test_installation_persistence.py --console "./x64/$Configuration/C2.Console.exe"

@@ -118,7 +118,17 @@ public:
             if(have_data_&&!newer(tx,data_sequence_))return;
             have_data_=true;data_sequence_=tx;auto id=word(p,6);
             if(state_.excluded.count(id))return;
-            if(!state_.targets.count(id)&&state_.targets.size()>=10)return;
+            if(!state_.targets.count(id)&&state_.targets.size()>=10){
+                // A full set of expired tracks must not reject newly observed
+                // identities for the entire 60 s diagnostic retention period.
+                if(track_state!=1)return;
+                auto victim=state_.targets.end();
+                for(auto it=state_.targets.begin();it!=state_.targets.end();++it)
+                    if(!state_.excluded.count(it->first)&&(it->second.status==2||now-it->second.seen>3)&&
+                       (victim==state_.targets.end()||it->second.seen<victim->second.seen))victim=it;
+                if(victim==state_.targets.end())return;
+                state_.targets.erase(victim);
+            }
             auto&t=state_.targets[id];t.id=id;t.seen=now;
             t.detected=detected;t.track_state=track_state;
             t.status=track_state?0:2;

@@ -44,6 +44,7 @@ struct FcsAsset {
     float azimuth{}, elevation{};
     float position_x{}, position_y{}, position_z{};
 };
+// Target status 4=optical pause, 5=reacquisition wait: display only, valid=0.
 struct Target {
     std::uint32_t id{};
     float azimuth{}, elevation{};
