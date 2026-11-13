@@ -1,8 +1,10 @@
+#include <bit>
 #include "c2/fcs_client.hpp"
 #include "c2/rdr_client.hpp"
 #include "rdr_control.hpp"
 #include "lidar_interlock.hpp"
 #include "observation_retention.hpp"
+#include "rdr_startup.hpp"
 #include "rdr_live_diagnostics.hpp"
 #include "target_position_filter.hpp"
 #include "rdr_coordinate_recorder.hpp"
@@ -57,6 +59,15 @@ static const char* result_name(gui::Result result) {
     case gui::Result::device_busy: return "device_busy";
     case gui::Result::response_timeout: return "response_timeout";
     case gui::Result::device_rejected: return "device_rejected";
+    case gui::Result::lidar_unsupported: return "lidar_unsupported";
+    case gui::Result::lidar_unknown: return "lidar_unknown";
+    case gui::Result::lidar_recovery_required: return "lidar_recovery_required";
+    case gui::Result::lidar_stop_unconfirmed: return "lidar_stop_unconfirmed";
+    case gui::Result::lidar_disconnected: return "lidar_disconnected";
+    case gui::Result::lidar_busy: return "lidar_busy";
+    case gui::Result::lidar_resume_unconfirmed: return "lidar_resume_unconfirmed";
+    case gui::Result::fcs_off_unconfirmed: return "fcs_off_unconfirmed";
+    case gui::Result::rdr_start_unconfirmed: return "rdr_start_unconfirmed";
     }
     return "unknown";
 }
@@ -141,7 +152,8 @@ int main(int argc, char** argv) {
     try {
         fcs::ClientConfig config;
         config.peer = {"192.168.0.103", 2000}; config.local = {"192.168.0.102", 2000};
-        config.response_timeout = std::chrono::milliseconds(200);
+        // Leave 20 ms of the 100 ms polling period for loop processing after a timeout.
+        config.response_timeout = std::chrono::milliseconds(80);
         std::filesystem::path stop_file, status_file, installation_file;
         bool standalone_installation{};
         std::filesystem::path rdr_record_file;
@@ -322,6 +334,7 @@ int main(int argc, char** argv) {
         };
         uint32_t target_id{}, active{}, frame_sequence{};
         LidarInterlock lidar_interlock;
+        RdrStartup rdr_startup;
         c2::rdr::ObservationRetention observation_retention;
         auto laser_off=[&]() {
             // Keep retrying even when an explicit CLI/GUI OFF fails or throws.
@@ -332,9 +345,27 @@ int main(int argc, char** argv) {
                 laser_deadline={};
             return reply;
         };
+        gui::Result output_block_result=gui::Result::lidar_stop_unconfirmed;
         auto prepare_output=[&]() {
-            if(!client||!lidar_interlock.begin(real_rdr->snapshot(),Clock::now())) {
-                log("LIDAR output blocked: unsupported, unknown, busy, or unresolved inhibit");
+            output_block_result=gui::Result::lidar_stop_unconfirmed;
+            if(rdr_startup.blocks_recovery()) {
+                output_block_result=gui::Result::lidar_recovery_required;
+                log("LIDAR output blocked: RDR startup incomplete");return false;
+            }
+            const auto before=real_rdr->snapshot();
+            if(!client||!lidar_interlock.begin(before,Clock::now())) {
+                switch(lidar_interlock.block_reason(before)) {
+                case LidarInterlock::Block::disconnected: output_block_result=gui::Result::lidar_disconnected; break;
+                case LidarInterlock::Block::unsupported: output_block_result=gui::Result::lidar_unsupported; break;
+                case LidarInterlock::Block::unknown: output_block_result=gui::Result::lidar_unknown; break;
+                case LidarInterlock::Block::recovery_required: output_block_result=gui::Result::lidar_recovery_required; break;
+                case LidarInterlock::Block::busy: output_block_result=gui::Result::lidar_busy; break;
+                default: break;
+                }
+                log(std::string("LIDAR output blocked: ")+result_name(output_block_result)+
+                    " supported="+std::to_string(before.lidar_supported)+" known="+std::to_string(before.lidar_known)+
+                    " inhibited="+std::to_string(before.lidar_inhibited)+" last_result="+std::to_string(before.last_result)+
+                    " phase="+std::to_string(unsigned(lidar_interlock.phase())));
                 return false;
             }
             const c2::rdr::BasePoint pause_origin{-installation.rdr_position[1],installation.rdr_position[0],installation.rdr_position[2]};
@@ -496,6 +527,8 @@ int main(int argc, char** argv) {
                 }
             }
             if (client && Clock::now() >= next_poll) {
+                // Schedule from request start so response latency is not added to the period.
+                next_poll = Clock::now()+std::chrono::milliseconds(100);
                 bool connected=client->snapshot().connected;
                 try {
                     auto reply=connected?client->query():client->connect();
@@ -503,10 +536,22 @@ int main(int argc, char** argv) {
                 } catch (const std::exception& error) {
                     log(std::string("FCS network retry: ")+error.what());
                 }
-                next_poll = Clock::now()+std::chrono::seconds(1);
             }
             auto state = client?client->snapshot():fcs::Snapshot{};
-            if(client&&lidar_interlock.update(real_rdr->snapshot(),state,Clock::now())) {
+            if(client&&rdr_startup.active()) {
+                const auto previous=rdr_startup.phase;
+                try {rdr_startup.tick(*real_rdr,*real_control,*client,Clock::now());}
+                catch(const std::exception& error) {
+                    rdr_startup.fail(*real_control,gui::Result::fcs_off_unconfirmed);
+                    log(std::string("RDR startup exception: ")+error.what());
+                }
+                if(previous!=rdr_startup.phase) {
+                    log(std::string("RDR startup phase=")+rdr_startup.name()+" result="+result_name(rdr_startup.result));
+                    if(rdr_startup.phase==RdrStartup::Phase::complete)lidar_interlock=LidarInterlock{};
+                    else if(rdr_startup.phase==RdrStartup::Phase::failed)lidar_interlock.fail();
+                }
+            }
+            if(client&&!rdr_startup.blocks_recovery()&&lidar_interlock.update(real_rdr->snapshot(),state,Clock::now())) {
                 try {
                     const auto result=real_rdr->command(0xED07,1);
                     log("LIDAR ED07 resume requested result="+std::to_string(result));
@@ -618,13 +663,32 @@ int main(int argc, char** argv) {
                 }
                 gui::PipeResponse response;
                 response.request_id = request.request_id; response.command = request.command; response.fcs_id=1;
-                if (real_control && request.command>=10) {
+                if (real_control && request.command>=10 && request.command!=18) {
                     response=real_control->handle(request,c2::rdr::seconds());
                     c2_ipc_reply(request_ipc,&response,ticket);
                 } else {
                 auto result = gui::Result::success;
                 try {
                     if (!request.request_id) result=gui::Result::invalid_request;
+                    else if(request.command==18) {
+                        result=request.rdr_id==1&&request.fcs_id==1?rdr_startup.result:gui::Result::invalid_request;
+                    }
+                    else if (request.command == 8 || request.command == 9) {
+                        if (request.rdr_id || request.fcs_id || request.target_id>3)
+                            throw std::invalid_argument("Invalid camera settings group");
+                        if (request.command==9) {
+                            // Merge with disk to preserve unrelated settings and edits.
+                            auto saved=load_installation_settings(installation_file,standalone_installation);
+                            auto& triple=request.target_id==0?saved.rdr_zero:
+                                request.target_id==1?saved.fcs_zero:request.target_id==2?saved.ranges:saved.rdr_fov;
+                            triple={request.position_x,request.position_y,request.position_z};
+                            validate_camera_settings(saved);
+                            save_installation_settings(installation_file,saved,standalone_installation);
+                            // Camera-only fields do not invalidate alignment or send device commands.
+                            installation.rdr_zero=saved.rdr_zero; installation.fcs_zero=saved.fcs_zero;
+                            installation.ranges=saved.ranges; installation.rdr_fov=saved.rdr_fov;
+                        }
+                    }
                     else if (request.command == 5) {
                         const bool rdr_position=request.rdr_id==1 && request.fcs_id==0;
                         const bool fcs_position=request.fcs_id==1 && request.rdr_id==0;
@@ -635,7 +699,7 @@ int main(int argc, char** argv) {
                             auto& position=rdr_position?installation.rdr_position:installation.eff_position;
                             // GUI (right,forward,up) -> installation (forward,left,up).
                             const std::array<double,3> updated{request.position_y,-double(request.position_x),request.position_z};
-                            auto saved = installation;
+                            auto saved = load_installation_settings(installation_file, standalone_installation);
                             (rdr_position?saved.rdr_position:saved.eff_position) = updated;
                             save_installation_settings(installation_file, saved, standalone_installation);
                             std::error_code timestamp_error;
@@ -660,13 +724,23 @@ int main(int argc, char** argv) {
                         }
                     }
                     else if (request.command == 6 && real_control) {
-                        result=static_cast<gui::Result>(real_control->set_operating(request).result);
-                        // A cold RDR boot retains optical inhibition. Starting
-                        // surveillance must be usable without an assigned target.
-                        if(result==gui::Result::success&&request.target_id==1&&client&&
-                           rdr_state.lidar_inhibited&&!target_id&&!demo_requested&&
-                           lidar_interlock.phase()==LidarInterlock::Phase::idle) {
-                            (void)command_result("EF04_OFF_INITIALIZE",laser_off());
+                        if(request.rdr_id!=1||request.fcs_id!=1||request.target_id>1)result=gui::Result::invalid_request;
+                        else if(request.target_id==0) {
+                            result=static_cast<gui::Result>(real_control->set_operating(request).result);
+                            if(result==gui::Result::success) {
+                                if(rdr_startup.active())lidar_interlock.fail();
+                                rdr_startup=RdrStartup{};
+                            }
+                        } else if(rdr_startup.active()||target_id||demo_requested||laser_deadline!=Clock::time_point{})result=gui::Result::lidar_busy;
+                        else if(!rdr_state.connected)result=gui::Result::lidar_disconnected;
+                        else if(!rdr_state.lidar_supported)result=gui::Result::lidar_unsupported;
+                        else if(!rdr_state.lidar_known)result=gui::Result::lidar_unknown;
+                        else if(rdr_state.last_result==1)result=gui::Result::lidar_busy;
+                        else if(!client||!state.connected)result=gui::Result::fcs_off_unconfirmed;
+                        else {
+                            real_control->confirm_start(false);
+                            rdr_startup.begin(request,rdr_state,Clock::now());
+                            log("RDR startup phase=fcs_off (request accepted; not yet operating)");
                             next_poll={};
                         }
                         if (!real_control->operating(rdr_state)) position_filter.reset();
@@ -719,11 +793,13 @@ int main(int argc, char** argv) {
                         else if (!target_consistent) result=gui::Result::target_pending;
                         else if ((flags&10) || demo_requested) result=gui::Result::device_busy;
                         else {
-                            if(!prepare_output())throw std::runtime_error("LIDAR stop not confirmed; demo blocked");
-                            auto reply=client->demo();
-                            result=command_result("EF05",reply);
-                            if(result==gui::Result::success) { active=0; demo_requested=true; demo_seen=false; next_poll={}; }
-                            else if(!reply) { demo_requested=true; health.fail(gui::Result::response_timeout); }
+                            if(!prepare_output()) result=output_block_result;
+                            else {
+                                auto reply=client->demo();
+                                result=command_result("EF05",reply);
+                                if(result==gui::Result::success) { active=0; demo_requested=true; demo_seen=false; next_poll={}; }
+                                else if(!reply) { demo_requested=true; health.fail(gui::Result::response_timeout); }
+                            }
                         }
                     } else result=gui::Result::not_supported;
                 } catch (const std::invalid_argument& error) {
@@ -736,17 +812,25 @@ int main(int argc, char** argv) {
                  if (request.command == uint32_t(gui::Command::get_fcs_busy))
                      response.active=result==gui::Result::success && (flags&10)!=0;
                 if(request.command==5 || request.command==6) response.connected=real_rdr->snapshot().connected;
-                // Upstream GUI accepts result 0..6 and assignment 0..3 only.
-                // Keep detailed reasons internally and in events.log.
+                // Retain legacy mapping for existing reasons. Updated GUI also
+                // accepts additive optical-interlock diagnostics (15..20).
                 if(original_gui && request_ipc==ipc) {
                     if(response.assignment==4) response.assignment=1;
                     if(request.command==0 && result!=gui::Result::invalid_request) response.result=0;
-                    else if(response.result>=7) response.result=
+                    else if(request.command!=18 && response.result>=7 && response.result<15) response.result=
                         (result==gui::Result::response_timeout || result==gui::Result::device_rejected ||
                          result==gui::Result::device_fault)?6:2;
                 }
+                if (request.command==8 && result==gui::Result::success) {
+                    const auto& values=request.target_id==0?installation.rdr_zero:
+                        request.target_id==1?installation.fcs_zero:request.target_id==2?installation.ranges:installation.rdr_fov;
+                    response.fcs_id=std::bit_cast<uint32_t>(float(values[0]));
+                    response.target_id=std::bit_cast<uint32_t>(float(values[1]));
+                    response.assignment=std::bit_cast<uint32_t>(float(values[2]));
+                    response.active=0; response.connected=1;
+                }
                 c2_ipc_reply(request_ipc,&response,ticket);
-                if(request.command) log("GUI command="+std::to_string(request.command)+
+                if(request.command && request.command!=8) log("GUI command="+std::to_string(request.command)+
                     " request_id="+std::to_string(request.request_id)+" result="+std::to_string(response.result)+
                     " internal_result="+std::to_string(unsigned(result))+" reason_name="+result_name(result)+
                     " requested_target="+std::to_string(request.target_id)+" target="+std::to_string(target_id)+
@@ -792,6 +876,9 @@ int main(int argc, char** argv) {
                 if(p.rdr.elevation==-32768)p.rdr.elevation=0;
                 if (!client) { p.fcs={};p.fcs_count=p.selected_fcs=0; }
             }
+            // Publish the saved display FOV after device population so both IPC
+            // readers use the same setting. This does not change sensor operation.
+            p.rdr.field_of_view = static_cast<float>(installation.rdr_fov[0]);
             if (!c2_ipc_publish(ipc,&frame)) throw std::runtime_error("GUI frame publish failed");
             if (Clock::now()>=next_log) {
                 std::cout << "FCS connected=" << state.connected << " ready=" << ready << " flags=" << flags
@@ -820,7 +907,8 @@ int main(int argc, char** argv) {
                 }
                 next_log=Clock::now()+std::chrono::seconds(2);
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            const auto loop_wakeup = Clock::now()+std::chrono::milliseconds(50);
+            std::this_thread::sleep_until(client ? std::min(loop_wakeup,next_poll) : loop_wakeup);
         }
         if (real_rdr && real_rdr->snapshot().connected) {
             real_rdr->command(0xED06,0);

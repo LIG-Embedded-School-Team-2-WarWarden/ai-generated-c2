@@ -18,6 +18,10 @@
 // PAN/TILT by sensor_to_base; translate that result, then subtract FCS position.
 struct InstallationConfig {
     std::array<double, 3> rdr_position{}, eff_position{};
+    // Camera-only metadata, in GUI XYZ metres; never used by device control.
+    std::array<double, 3> rdr_zero{}, fcs_zero{};
+    std::array<double, 3> ranges{1.5, 10.0, 3.0};
+    std::array<double, 3> rdr_fov{120.0, 45.0, 0.0};
     std::string observer_id{"RDR-1"}, effector_id{"FCS-1"};
 };
 
@@ -59,6 +63,28 @@ inline std::array<double, 3> position(const nlohmann::json& devices,
 }
 } // namespace installation_config_detail
 
+inline std::array<double, 3> camera_triple(const nlohmann::json& value) {
+    if (!value.is_array() || value.size()!=3)
+        throw std::invalid_argument("Camera setting requires three numbers");
+    std::array<double,3> result{};
+    for (size_t i=0;i<3;++i) {
+        if (!value[i].is_number()) throw std::invalid_argument("Camera setting must be numeric");
+        result[i]=value[i].get<double>();
+        if (!std::isfinite(result[i]) || std::abs(result[i])>std::numeric_limits<float>::max())
+            throw std::invalid_argument("Camera setting must be finite and fit float");
+    }
+    return result;
+}
+inline void validate_camera_settings(const InstallationConfig& value) {
+    (void)camera_triple(value.rdr_zero); (void)camera_triple(value.fcs_zero);
+    (void)camera_triple(value.ranges);
+    (void)camera_triple(value.rdr_fov);
+    if (value.rdr_fov[0]<=0 || value.rdr_fov[0]>360 || value.rdr_fov[1]<=0 || value.rdr_fov[1]>180 || value.rdr_fov[2]!=0)
+        throw std::invalid_argument("RDR horizontal FOV must be (0,360], vertical (0,180] degrees");
+    if (value.ranges[0]<0 || value.ranges[1]<value.ranges[0] || value.ranges[2]<0)
+        throw std::invalid_argument("Distances must be nonnegative and RDR maximum >= minimum");
+}
+
 inline InstallationConfig parse_installation_config(const nlohmann::json& config) {
     if (!config.is_object() || !config.contains("devices") ||
         !config.at("devices").is_object())
@@ -83,6 +109,17 @@ inline InstallationConfig parse_installation_config(const nlohmann::json& config
             throw std::invalid_argument("Installation config: no EFF device was configured");
     }
     result.eff_position = installation_config_detail::position(devices, result.effector_id, "EFF");
+    if (config.contains("camera")) {
+        const auto& camera=config.at("camera");
+        if (!camera.is_object()) throw std::invalid_argument("camera must be an object");
+        if (camera.contains("rdr_zero")) result.rdr_zero=camera_triple(camera.at("rdr_zero"));
+        if (camera.contains("fcs_zero")) result.fcs_zero=camera_triple(camera.at("fcs_zero"));
+        if (camera.contains("ranges")) result.ranges=camera_triple(camera.at("ranges"));
+        result.rdr_fov=camera_triple(nlohmann::json::array({
+            camera.value("rdr_horizontal_fov_deg", nlohmann::json(120.0)),
+            camera.value("rdr_vertical_fov_deg", nlohmann::json(45.0)), 0}));
+    }
+    validate_camera_settings(result);
     return result;
 }
 
@@ -129,6 +166,12 @@ inline void save_installation_settings(const std::filesystem::path& path,
     devices[value.observer_id]["position"] = value.rdr_position;
     devices[value.effector_id]["role"] = "EFF";
     devices[value.effector_id]["position"] = value.eff_position;
+    validate_camera_settings(value);
+    settings["camera"]["rdr_zero"]=value.rdr_zero;
+    settings["camera"]["fcs_zero"]=value.fcs_zero;
+    settings["camera"]["ranges"]=value.ranges;
+    settings["camera"]["rdr_horizontal_fov_deg"]=value.rdr_fov[0];
+    settings["camera"]["rdr_vertical_fov_deg"]=value.rdr_fov[1];
     (void)parse_installation_config(settings);
     document["installation"] = std::move(settings);
 
