@@ -132,8 +132,8 @@ public:
         for(const auto&t:targets) {
             if(p.target_count==c2::ipc::target_capacity)break;
             auto&v=p.targets[p.target_count++];v.id=t.id;v.rdr_id=1;
-            v.valid=p.rdr.operating && t.valid;v.status=v.valid?0:t.status==3?3:2;
-            if(v.valid) {
+            v.valid=p.rdr.operating && t.valid;v.status=v.valid?0:t.status>=3?t.status:2;
+            if(v.valid || (p.rdr.operating && (t.status==4 || t.status==5))) {
                 // GUI XYZ is exclusively world coordinates, never sensor/relative XYZ.
                 v.x=float(t.world.east);v.y=float(t.world.north);v.z=float(t.world.up);
                 // Target table uses north=0 degrees without the map's display offset.

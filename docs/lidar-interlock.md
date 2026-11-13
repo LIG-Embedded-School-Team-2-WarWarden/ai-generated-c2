@@ -59,3 +59,7 @@ RDR 펌웨어는 억제 중에도 DE06으로 ACTIVE 진입을 완료할 수 있�
 - 실제 RDR/FCS 펌웨어 및 광학 출력 검증은 수행하지 않았다.
 
 온라인 규격: [RDR-ECS ICD](https://ligproject2team.atlassian.net/wiki/spaces/MFS/pages/37355617/RDR-ECS+ICD), [FCS-ECS ICD](https://ligproject2team.atlassian.net/wiki/spaces/MFS/pages/31358993/FCS-ECS+ICD).
+
+## 중단 중 객체 표시
+
+ED07 중단 직전 ID·좌표를 표시 전용으로 보존하고 새 실제 관측 전에는 제어에 사용하지 않는다. [ID 보존·재관측 계약](observation-retention.md)에 ECS/GUI 상태와 RDR 펌웨어 변경사항을 정리했다.

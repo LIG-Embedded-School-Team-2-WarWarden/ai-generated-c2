@@ -2,6 +2,7 @@
 #include "c2/rdr_client.hpp"
 #include "rdr_control.hpp"
 #include "lidar_interlock.hpp"
+#include "observation_retention.hpp"
 #include "rdr_live_diagnostics.hpp"
 #include "target_position_filter.hpp"
 #include "rdr_coordinate_recorder.hpp"
@@ -321,6 +322,7 @@ int main(int argc, char** argv) {
         };
         uint32_t target_id{}, active{}, frame_sequence{};
         LidarInterlock lidar_interlock;
+        c2::rdr::ObservationRetention observation_retention;
         auto laser_off=[&]() {
             // Keep retrying even when an explicit CLI/GUI OFF fails or throws.
             laser_deadline=Clock::now()+std::chrono::seconds(1);
@@ -335,6 +337,10 @@ int main(int argc, char** argv) {
                 log("LIDAR output blocked: unsupported, unknown, busy, or unresolved inhibit");
                 return false;
             }
+            const c2::rdr::BasePoint pause_origin{-installation.rdr_position[1],installation.rdr_position[0],installation.rdr_position[2]};
+            const auto pause_state=real_rdr->snapshot();
+            observation_retention.begin(pause_state,position_filter.update(pause_state,pause_origin),pause_origin,c2::rdr::seconds());
+            position_filter.reset();
             try {
                 if(real_rdr->command(0xED07,0)>1) {lidar_interlock.fail();return false;}
                 log("LIDAR ED07 OFF requested; waiting for DE07 physical stop confirmation");
@@ -526,6 +532,8 @@ int main(int argc, char** argv) {
             // GUI serialization never feeds coordinates back into control.
             if (!real_control->operating(rdr_state)) position_filter.reset();
             auto filtered_targets=position_filter.update(rdr_state,rdr_origin);
+            auto display_targets=observation_retention.update(rdr_state,filtered_targets,rdr_origin,
+                c2::rdr::seconds(),lidar_interlock.phase()==LidarInterlock::Phase::idle);
             auto observation = observation_snapshot(rdr_state,filtered_targets);
             bool current = state.connected && state.status &&
                 Clock::now()-state.status_received_at < std::chrono::seconds(2);
@@ -641,6 +649,8 @@ int main(int argc, char** argv) {
                                         {-position[1],position[0],position[2]});
                                     filtered_targets=position_filter.update(rdr_state,
                                         {-position[1],position[0],position[2]});
+                                    observation_retention.reset();
+                                    display_targets=filtered_targets;
                                     observation=observation_snapshot(rdr_state,filtered_targets);
                                 }
                             }
@@ -759,7 +769,11 @@ int main(int argc, char** argv) {
                 fcs_motor_to_gui_azimuth(state.status->azimuth) : 135;
             p.fcs.elevation=current && state.status->elevation!=-32768 ? float(state.status->elevation) : 0;
             if (real_control) {
-                real_control->populate(p,rdr_state,filtered_targets);
+                // A command above can start the pause in this same frame.
+                display_targets=observation_retention.update(real_rdr->snapshot(),filtered_targets,
+                    {-installation.rdr_position[1],installation.rdr_position[0],installation.rdr_position[2]},
+                    c2::rdr::seconds(),lidar_interlock.phase()==LidarInterlock::Phase::idle);
+                real_control->populate(p,rdr_state,display_targets);
                 if (rdr_reply!=RdrReply::none) {
                     const auto reply=rdr_json(rdr_state,corrected_targets,filtered_targets);
                     std::cout<<(rdr_reply==RdrReply::targets?reply.at("targets"):reply).dump()<<std::endl;

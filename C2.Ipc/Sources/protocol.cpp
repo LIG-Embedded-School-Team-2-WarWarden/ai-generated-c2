@@ -77,7 +77,7 @@ bool valid(const Payload& p) {
     if (p.rdr.enabled > 1 || p.rdr.operating > 1 || p.rdr.connected > 1 ||
         p.fcs.enabled > 1 || p.fcs.operating > 1 || p.fcs.connected > 1 || p.fcs.laser_on > 1) return false;
     for (const auto& t : p.targets)
-        if (t.valid > 1 || t.status > 3 || t.reserved || !std::isfinite(t.azimuth) ||
+        if (t.valid > 1 || t.status > 5 || (t.status >= 4 && t.valid) || t.reserved || !std::isfinite(t.azimuth) ||
             !std::isfinite(t.elevation) || !std::isfinite(t.distance) ||
             t.distance < 0 || !std::isfinite(t.x) || !std::isfinite(t.y) || !std::isfinite(t.z)) return false;
     return true;
