@@ -52,11 +52,14 @@ def run(executable, new_identity=False, gui_demo=False):
             wait_for(lambda: ask('rdr status')['connected'])
             wait_for(lambda: ask('fcs status')['connected'])
             gui = Gui(suffix)
+            board.allow_off=True  # Acknowledge the startup FCS OFF transaction.
             assert gui.command(6,target=1)==0
             before=target_records(gui.wait(lambda f: valid_count(f)==10))
             ident=before[0][0]
             wait_for(lambda: ask('rdr status')['result']==0)
             wait_for(lambda: ask('fcs status').get('flags')==1)
+            wait_for(lambda: gui.command(18)==0)
+            board.allow_off=False
             if new_identity:
                 assert gui.command(1,target=ident)==0
                 wait_for(lambda: gui.command(0)==0 and gui.last_response[7]==2)
