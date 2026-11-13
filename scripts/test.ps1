@@ -11,6 +11,8 @@ try {
     if($LASTEXITCODE){throw 'Observation retention scenarios failed.'}
     python ./C2.Tests/Integration/test_lidar_interlock.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Lidar optical interlock scenarios failed.'}
+    python ./C2.Tests/Integration/test_camera_settings.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw 'Camera settings persistence scenarios failed.'}
     python ./C2.Tests/Integration/test_installation_persistence.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Installation position persistence checks failed.'}
     python ./C2.Tests/Integration/test_rdr_recording_analysis.py

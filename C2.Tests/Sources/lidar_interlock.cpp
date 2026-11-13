@@ -6,7 +6,19 @@ int lidar_interlock_entry(){
     const auto now=LidarInterlock::Clock::now();
     c2::rdr::State r;r.connected=true;r.generation=1;r.mode=2;
     LidarInterlock gate;
+    using Block=LidarInterlock::Block;
+    require(gate.block_reason(r)==Block::unsupported);
     require(!gate.begin(r,now)); // Legacy board must not enable optical output.
+    r.lidar_supported=true;
+    require(gate.block_reason(r)==Block::unknown);
+    r.lidar_known=true;r.connected=false;
+    require(gate.block_reason(r)==Block::disconnected);
+    r.connected=true;r.lidar_inhibited=true;
+    require(gate.block_reason(r)==Block::recovery_required);
+    r.lidar_inhibited=false;r.last_result=1;
+    require(gate.block_reason(r)==Block::busy);
+    r.last_result=0;
+    require(gate.block_reason(r)==Block::none);
     r.lidar_supported=r.lidar_known=r.lidar_on=true;
     require(gate.begin(r,now));require(!gate.stopped(r));
     r.last_command=0xED07;r.last_result=r.lidar_result=1;r.lidar_inhibited=true;r.lidar_on=false;

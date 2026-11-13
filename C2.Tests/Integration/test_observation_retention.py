@@ -52,8 +52,11 @@ def run(executable, new_identity=False):
             wait_for(lambda: ask('rdr status')['connected'])
             wait_for(lambda: ask('fcs status')['connected'])
             gui = Gui(suffix)
+            # Startup now requires an acknowledged FCS OFF before ED06/ED07.
+            board.allow_off = True
             assert gui.command(6,target=1)==0
             before = target_records(gui.wait(lambda f: valid_count(f)==10))
+            board.allow_off = False
             ids = {t[0] for t in before}
             assert ask('fcs laser on')['result']==0
             paused = target_records(gui.wait(lambda f: len(target_records(f))==10 and all(t[8]==4 and t[9]==0 for t in target_records(f))))
