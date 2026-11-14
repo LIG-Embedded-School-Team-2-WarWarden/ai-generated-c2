@@ -5,6 +5,8 @@ Push-Location $root
 try {
     & "./x64/$Configuration/C2.Tests.exe"
     if($LASTEXITCODE){throw 'Binary ICD unit tests failed.'}
+    python ./C2.Tests/Integration/test_manual_sequence.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw 'Manual GUI sequence scenarios failed.'}
     python ./C2.Tests/Integration/test_retention_regressions.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Observation retention review regressions failed.'}
     python ./C2.Tests/Integration/test_observation_retention.py --console "./x64/$Configuration/C2.Console.exe"

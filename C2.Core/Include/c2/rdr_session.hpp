@@ -13,7 +13,7 @@
 #include <vector>
 #include <algorithm>
 namespace c2::rdr {
-inline constexpr double lidar_command_timeout_seconds=2.0;
+inline constexpr double lidar_command_timeout_seconds=6.0;
 using Packet=std::array<uint8_t,24>;
 inline uint16_t word(std::span<const uint8_t> p,unsigned n){return uint16_t((unsigned(p[n])<<8)|p[n+1]);}
 inline void word(Packet&p,unsigned n,uint16_t v){p.at(n)=uint8_t(v>>8);p.at(n+1)=uint8_t(v);}
@@ -156,14 +156,14 @@ public:
         const auto code=word(p,14);
         if(msg==0xDE07){
             const auto flags=word(p,20);
-            if(code==0&&(!(flags&8)||!(flags&16)||
+            if(code==0&&(!(flags&8)||
                 (word(p,6)==0?(!(flags&64)||(flags&32)):
-                    ((flags&64)||bool(flags&32)!=((flags>>8)==2)))))return;
+                    ((flags&64)||((flags&16)&&bool(flags&32)!=((flags>>8)==2))))))return;
             // A cached final reply may precede a newer DE02. Never roll status
             // back, but accept its matching completion if current status agrees.
-            if(!status(p,now)&&(code!=0||!state_.lidar_supported||!state_.lidar_known||
-                (word(p,6)==0?(!state_.lidar_inhibited||state_.lidar_on):
-                    (state_.lidar_inhibited||state_.lidar_on!=(state_.mode==2)))))return;
+            if(!status(p,now)&&(code!=0||!state_.lidar_supported||
+                (word(p,6)==0?(!state_.lidar_inhibited||(state_.lidar_known&&state_.lidar_on)):
+                    (state_.lidar_inhibited||(state_.lidar_known&&state_.lidar_on!=(state_.mode==2))))))return;
         }else status(p,now);
         state_.last_result=code;
         if(msg==0xDE07)state_.lidar_result=code;

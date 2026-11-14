@@ -3,6 +3,7 @@
 #include "c2/rdr_client.hpp"
 #include "rdr_control.hpp"
 #include "lidar_interlock.hpp"
+#include "manual_sequence.hpp"
 #include "observation_retention.hpp"
 #include "rdr_startup.hpp"
 #include "rdr_live_diagnostics.hpp"
@@ -300,6 +301,7 @@ int main(int argc, char** argv) {
                   << "FCS and RDR connect automatically; RDR report/start require commands.\n"
                   << "RDR controls: rdr connect / rdr report on / rdr start / rdr stop\n"
                   << "Read-only world XYZ monitor: rdr live on / rdr live off (200 ms)\n"
+                  << "Manual result after visual verification: sequence confirm-hit TARGET_ID\n"
                   << "Target position Kalman=" << (position_filter_config.enabled?"on":"off")
                   << " measurement_stddev_m=" << position_filter_config.measurement_stddev_m
                   << " process_stddev_m_sqrt_s=" << position_filter_config.process_stddev_m_sqrt_s << '\n'
@@ -335,6 +337,7 @@ int main(int argc, char** argv) {
         uint32_t target_id{}, active{}, frame_sequence{};
         AssignmentHealth health; auto& assignment=health.state;
         LidarInterlock lidar_interlock;
+        ManualSequence manual;
         RdrStartup rdr_startup;
         c2::rdr::ObservationRetention observation_retention;
         auto laser_off=[&]() {
@@ -405,6 +408,7 @@ int main(int argc, char** argv) {
         bool demo_requested{}, demo_seen{};
         auto invalidate_installation_alignment=[&]() {
             if (!target_id) return;
+            if(manual.active())manual.fail(gui::Result::target_changed);
             health.fail(gui::Result::target_changed);
             active=0;demo_requested=demo_seen=false;
             log("Installation positions changed: existing alignment invalid; reassign required");
@@ -434,6 +438,7 @@ int main(int argc, char** argv) {
                     const std::vector<std::string> words{std::istream_iterator<std::string>{validation}, {}};
                     size_t expected=0;
                     if(device=="quit" || device=="exit")expected=1;
+                    else if(device=="sequence"&&command=="confirm-hit")expected=3;
                     else if(device=="rdr") {
                         if(command=="connect"||command=="status"||command=="targets"||command=="start"||command=="stop")expected=2;
                         else if(command=="report"||command=="exclude"||command=="resume"||command=="live")expected=3;
@@ -442,9 +447,25 @@ int main(int argc, char** argv) {
                         else if(command=="point")expected=4;
                         else if(command=="laser")expected=3;
                     }
+                    if(manual.active()&&((device=="fcs"&&command=="point")||
+                        (device=="fcs"&&command=="laser"&&words.back()=="on")||
+                        (device=="rdr"&&command!="status"&&command!="targets"&&command!="live")))
+                        throw std::invalid_argument("Manual sequence owns devices; cancel it before independent control");
                     if(!expected || words.size()!=expected)throw std::invalid_argument("invalid command or argument count");
                     if(device=="quit" || device=="exit")break;
-                    if(device=="rdr" && command=="live") {
+                    if(device=="sequence"&&command=="confirm-hit") {
+                        const auto id=parse_port(words[2]);
+                        const auto r=real_rdr->snapshot();const auto f=client?client->snapshot():fcs::Snapshot{};
+                        if(!manual.active()||manual.target!=id||!manual.result_started||
+                           !(manual.phase==ManualSequence::Phase::observing||
+                             (manual.phase==ManualSequence::Phase::failed&&manual.reason==gui::Result::device_error))||
+                           r.generation!=manual.generation||!ManualSequence::resumed(r)||
+                           !f.connected||!f.status||Clock::now()-f.status_received_at>std::chrono::seconds(2)||
+                           (f.status->flags&30))throw std::invalid_argument("Manual result confirmation unavailable");
+                        manual.enter(ManualSequence::Phase::hit,Clock::now());
+                        log("MANUAL operator_confirmed_hit target="+std::to_string(id)+" source=console_visual_confirmation");
+                        std::cout<<nlohmann::json{{"manual_result","hit"},{"target",id},{"source","operator"}}.dump()<<std::endl;
+                    } else if(device=="rdr" && command=="live") {
                         input>>arg;
                         if(arg!="on" && arg!="off")throw std::invalid_argument("live on|off");
                         rdr_live=arg=="on";
@@ -477,7 +498,7 @@ int main(int argc, char** argv) {
                                 if(!prepare_output())throw std::runtime_error("LIDAR stop not confirmed; output blocked (use fcs laser off to recover)");
                                 laser_deadline=Clock::now()+std::chrono::seconds(1);
                                 response=client->laser(true);
-                            } else response=laser_off();
+                            } else {response=laser_off();if(manual.active())manual.fail(gui::Result::device_error);}
                         }
                         else throw std::invalid_argument("unknown FCS command");
                         auto snapshot=client->snapshot();
@@ -552,7 +573,7 @@ int main(int argc, char** argv) {
                     else if(rdr_startup.phase==RdrStartup::Phase::failed)lidar_interlock.fail();
                 }
             }
-            if(client&&!rdr_startup.blocks_recovery()&&lidar_interlock.update(real_rdr->snapshot(),state,Clock::now())) {
+            if(client&&!manual.active()&&!rdr_startup.blocks_recovery()&&lidar_interlock.update(real_rdr->snapshot(),state,Clock::now())) {
                 try {
                     const auto result=real_rdr->command(0xED07,1);
                     log("LIDAR ED07 resume requested result="+std::to_string(result));
@@ -608,8 +629,22 @@ int main(int argc, char** argv) {
                 std::abs(state.status->elevation-commanded_tilt)<=1;
             if (real_rdr && target_id && observation.generation!=assigned_rdr_generation)
                 health.fail(gui::Result::target_changed);
-            health.update(current,ready,assigned_now!=observation.targets.end(),target_consistent,
+            if(!manual.active())health.update(current,ready,assigned_now!=observation.targets.end(),target_consistent,
                 aligned,(flags&2)!=0,demo_requested,Clock::now()>move_deadline);
+            if(manual.active()) {
+                const auto before=manual.phase;
+                manual.tick(rdr_state,state,target_consistent,Clock::now(),c2::rdr::seconds());
+                if(before!=manual.phase) {
+                    log("MANUAL target="+std::to_string(manual.target)+" state="+std::to_string(manual.state())+
+                        " reason="+result_name(manual.reason));
+                    if(manual.phase==ManualSequence::Phase::observing)lidar_interlock=LidarInterlock{};
+                }
+                if(manual.phase==ManualSequence::Phase::failed&&client&&!manual.recovery_requested) {
+                    manual.recovery_requested=true;
+                    log("MANUAL result unconfirmed; explicit cancellation required; requesting FCS OFF");
+                    try{(void)laser_off();}catch(const std::exception& e){log(e.what());}
+                }
+            }
             auto assignment_details=[&](uint32_t inspected_target) {
                 const bool diagnostic_aligned=current && std::abs(state.status->azimuth-commanded_pan)<=1 &&
                     std::abs(state.status->elevation-commanded_tilt)<=1;
@@ -664,13 +699,99 @@ int main(int argc, char** argv) {
                 }
                 gui::PipeResponse response;
                 response.request_id = request.request_id; response.command = request.command; response.fcs_id=1;
-                if (real_control && request.command>=10 && request.command!=18) {
-                    response=real_control->handle(request,c2::rdr::seconds());
+                if (real_control && request.command>=10 && request.command<1000 && request.command!=18) {
+                    if(manual.active()&&request.command>=10&&request.command<=16) {
+                        response.result=uint32_t(gui::Result::device_busy);
+                        response.target_id=manual.target;response.assignment=manual.state();response.connected=rdr_state.connected;
+                    } else response=real_control->handle(request,c2::rdr::seconds());
                     c2_ipc_reply(request_ipc,&response,ticket);
                 } else {
                 auto result = gui::Result::success;
                 try {
                     if (!request.request_id) result=gui::Result::invalid_request;
+                    else if(request.command>=1001&&request.command<=1009) {
+                        using P=ManualSequence::Phase;
+                        const auto now=Clock::now();
+                        if(request_ipc!=ipc||request.rdr_id!=1||request.fcs_id!=1||!request.target_id||request.target_id>65535)
+                            result=gui::Result::invalid_request;
+                        else if(request.command==1002||request.command==1006||request.command==1008)
+                            result=gui::Result::not_supported;
+                        else if(!client||!current||!ready)result=gui::Result::asset_unavailable;
+                        else if(request.command==1001) {
+                            const auto found=std::find_if(observation.targets.begin(),observation.targets.end(),
+                                [&](const Target& t){return t.id==request.target_id;});
+                            if(manual.active()&&manual.target==request.target_id&&manual.phase==P::registered){}
+                            else if(target_id||manual.active())result=gui::Result::already_assigned;
+                            else if(!observation.scanning||!observation.streaming||found==observation.targets.end()||
+                                    rdr_state.lidar_inhibited||!rdr_state.lidar_known||!rdr_state.lidar_on)
+                                result=gui::Result::target_pending;
+                            else if((flags&14)||lidar_interlock.phase()!=LidarInterlock::Phase::idle||rdr_startup.blocks_recovery())
+                                result=gui::Result::device_busy;
+                            else {
+                                manual=ManualSequence{};manual.target=target_id=request.target_id;
+                                manual.generation=assigned_rdr_generation=rdr_state.generation;
+                                manual.enter(P::registered,now);health.reset();active=0;
+                            }
+                        } else if(!manual.active()||manual.target!=request.target_id)result=gui::Result::not_assigned;
+                        else if(request.command==1003) {
+                            if(manual.phase==P::aiming||manual.phase==P::aimed){}
+                            else if(manual.phase!=P::registered)result=gui::Result::invalid_request;
+                            else if(assigned_now==observation.targets.end()||!observation.scanning||!observation.streaming||
+                                rdr_state.lidar_inhibited||(flags&14))result=gui::Result::target_pending;
+                            else {
+                                const auto angles=fcs_point_angles(assigned_now->east+installation.eff_position[1],
+                                    assigned_now->north-installation.eff_position[0],assigned_now->up-installation.eff_position[2]);
+                                manual.pan=commanded_pan=angles.azimuth;manual.tilt=commanded_tilt=angles.elevation;
+                                auto reply=client->point(commanded_tilt,commanded_pan);
+                                result=command_result("EF03_MANUAL",reply);
+                                if(result==gui::Result::success){
+                                    position_guard.start({assigned_now->east,assigned_now->north,assigned_now->up},
+                                        rdr_state.targets.at(uint16_t(target_id)).seen);
+                                    manual.enter(P::aiming,Clock::now());next_poll={};
+                                } else if(!reply)manual.fail(result);
+                            }
+                        } else if(request.command==1004) {
+                            if(manual.phase==P::pausing||manual.phase==P::paused){}
+                            else if(manual.phase!=P::aimed||!target_consistent||!aligned||(flags&14))result=gui::Result::alignment_required;
+                            else if(!lidar_interlock.begin(rdr_state,now))result=gui::Result::lidar_recovery_required;
+                            else {
+                                observation_retention.begin(rdr_state,filtered_targets,rdr_origin,c2::rdr::seconds());
+                                position_filter.reset();
+                                manual.paused_at=now;manual.enter(P::pausing,now);
+                                if(real_rdr->command(0xED07,0)>1){manual.fail(gui::Result::lidar_stop_unconfirmed);result=manual.reason;}
+                            }
+                        } else if(request.command==1005) {
+                            if(manual.phase==P::firing||manual.phase==P::fired){}
+                            else if(manual.phase!=P::paused)result=gui::Result::invalid_request;
+                            else if(!ManualSequence::stopped(real_rdr->snapshot())||!aligned||(flags&14)||
+                                now-manual.paused_at>=std::chrono::seconds(10))result=gui::Result::lidar_stop_unconfirmed;
+                            else {
+                                // Existing EF05 capture command; legacy demo() wire API is unchanged.
+                                manual.enter(P::firing,Clock::now());manual.output_seen=false;
+                                const auto reply=client->demo();result=command_result("EF05_MANUAL",reply);
+                                if(result!=gui::Result::success)manual.fail(result);
+                                next_poll={};
+                            }
+                        } else if(request.command==1007) {
+                            if(manual.phase==P::resuming||manual.phase==P::observing||manual.phase==P::alive||manual.phase==P::hit){}
+                            else if(manual.phase!=P::fired)result=gui::Result::invalid_request;
+                            // Phase::fired already requires a fresh OFF observation after activity.
+                            // Do not require another poll after publishing completion to the GUI.
+                            else if(flags&14)result=gui::Result::fcs_off_unconfirmed;
+                            else {
+                                manual.enter(P::resuming,now);
+                                if(real_rdr->command(0xED07,1)>1){manual.fail(gui::Result::lidar_resume_unconfirmed);result=manual.reason;}
+                            }
+                        } else if(request.command==1009) {
+                            if(manual.phase!=P::alive)result=gui::Result::invalid_request;
+                            else if(assigned_now==observation.targets.end()||!ManualSequence::resumed(rdr_state)||(flags&14))
+                                result=gui::Result::target_pending;
+                            else {manual.enter(P::registered,now);position_guard.reset();manual.output_seen=false;
+                                manual.result_started=false;manual.recovery_requested=false;active=0;}
+                        }
+                    }
+                    else if(manual.active()&&(request.command==1||request.command==3||request.command==5||
+                            request.command==6||request.command==9))result=gui::Result::device_busy;
                     else if(request.command==18) {
                         result=request.rdr_id==1&&request.fcs_id==1?rdr_startup.result:gui::Result::invalid_request;
                     }
@@ -736,7 +857,6 @@ int main(int argc, char** argv) {
                         } else if(rdr_startup.active()||target_id||demo_requested||laser_deadline!=Clock::time_point{})result=gui::Result::lidar_busy;
                         else if(!rdr_state.connected)result=gui::Result::lidar_disconnected;
                         else if(!rdr_state.lidar_supported)result=gui::Result::lidar_unsupported;
-                        else if(!rdr_state.lidar_known)result=gui::Result::lidar_unknown;
                         else if(rdr_state.last_result==1)result=gui::Result::lidar_busy;
                         else {
                             real_control->confirm_start(false);
@@ -748,7 +868,7 @@ int main(int argc, char** argv) {
                         if (!real_control->operating(rdr_state)) position_filter.reset();
                     }
                     else if (request.fcs_id != 1 || request.rdr_id != 1) result=gui::Result::invalid_request;
-                    else if (request.command == 0) { result=health.reason; }
+                    else if (request.command == 0) { result=manual.active()?manual.reason:health.reason; }
                     else if (request.command == uint32_t(gui::Command::get_fcs_busy)) {
                         if (!current || state.status_received_at < last_assignment_cancel)
                             result=gui::Result::status_pending;
@@ -786,7 +906,7 @@ int main(int argc, char** argv) {
                         auto reply=laser_off();
                         result=command_result("EF04_OFF",reply);
                         if(result==gui::Result::success&&reply->laser_state!=0)result=gui::Result::device_fault;
-                        if(result==gui::Result::success) { target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; last_assignment_cancel=Clock::now(); next_poll={}; }
+                        if(result==gui::Result::success) { manual=ManualSequence{};target_id=active=0; health.reset(); position_guard.reset(); demo_requested=demo_seen=false; last_assignment_cancel=Clock::now(); next_poll={}; }
                     } else if (request.command == 3) {
                         if (!target_id || target_id!=request.target_id) result=gui::Result::not_assigned;
                         else if (assignment!=2) result=health.reason!=gui::Result::success?health.reason:gui::Result::alignment_required;
@@ -810,7 +930,9 @@ int main(int argc, char** argv) {
                     result=gui::Result::device_error; log(std::string("device_exception ")+error.what());
                 }
                 response.result=uint32_t(result); response.target_id=target_id;
-                response.assignment=assignment; response.active=active; response.connected=state.connected;
+                response.assignment=manual.active()?manual.state():assignment;
+                response.active=manual.active()?unsigned(manual.phase==ManualSequence::Phase::fired):active;
+                response.connected=state.connected;
                  if (request.command == uint32_t(gui::Command::get_fcs_busy))
                      response.active=result==gui::Result::success && (flags&10)!=0;
                 if(request.command==5 || request.command==6) response.connected=real_rdr->snapshot().connected;
