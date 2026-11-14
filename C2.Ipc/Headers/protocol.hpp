@@ -28,7 +28,11 @@ enum class Command : std::uint32_t {
     // Group 3: RDR horizontal/vertical FOV in degrees, reserved zero.
     // Device IDs must be zero. Get response words at offsets 20/24/28 carry
     // IEEE754 float bits, not asset/target/assignment state. Frame ABI is unchanged.
-    get_camera_settings, set_camera_settings
+    get_camera_settings, set_camera_settings,
+    register_manual_target=1001, confirm_manual_assignment=1002,
+    start_manual_aim=1003, pause_manual_scan=1004, start_manual_fire=1005,
+    confirm_manual_fire=1006, resume_manual_scan=1007,
+    confirm_manual_result=1008, retry_manual_assignment=1009
 };
 enum class Result : std::uint32_t {
     success, invalid_request, asset_unavailable, not_assigned,

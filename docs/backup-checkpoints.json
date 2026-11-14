@@ -1,0 +1,86 @@
+[
+  {
+    "directory": "ai-generated-c2",
+    "branch": "codex/checkpoint-before-sequence-20261114-ai-generated-c2",
+    "commit": "19c835bab4bb9eae3ef27bddbf2d525319eddb31",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/ai-generated-c2.git",
+    "excluded": 41
+  },
+  {
+    "directory": "pr-ecs",
+    "branch": "codex/checkpoint-before-sequence-20261114-pr-ecs",
+    "commit": "e254e5728ac5d64f850380f96a4613da7efa2d42",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/ai-generated-c2.git",
+    "excluded": 0
+  },
+  {
+    "directory": "pr-gui",
+    "branch": "codex/checkpoint-before-sequence-20261114-pr-gui",
+    "commit": "53d18b4c32c4a23a6d8ecb03c1591aefe4e39d64",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/c2-GUI.git",
+    "excluded": 2
+  },
+  {
+    "directory": "camera-settings-gui",
+    "branch": "codex/checkpoint-before-sequence-20261114-camera-settings-gui",
+    "commit": "cdd53128b11d93394c52742d16a2d33ef286c68e",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/c2-GUI.git",
+    "excluded": 2
+  },
+  {
+    "directory": ".busy-pr-ecs",
+    "branch": "codex/checkpoint-before-sequence-20261114-busy-pr-ecs",
+    "commit": "433bc8cd51a5274ce56088ec5937caf01cc4de8b",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/ai-generated-c2.git",
+    "excluded": 0
+  },
+  {
+    "directory": ".busy-pr-gui",
+    "branch": "codex/checkpoint-before-sequence-20261114-busy-pr-gui",
+    "commit": "2442940e8fa91eb1e04996a5e8e5983252064b85",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/c2-GUI.git",
+    "excluded": 2
+  },
+  {
+    "directory": ".pr-lidar-interlock",
+    "branch": "codex/checkpoint-before-sequence-20261114-pr-lidar-interlock",
+    "commit": "0b739a5475d2716be7366d0fc38bd6124d65696c",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/ai-generated-c2.git",
+    "excluded": 0
+  },
+  {
+    "directory": ".retention-ecs",
+    "branch": "codex/checkpoint-before-sequence-20261114-retention-ecs",
+    "commit": "1491b794d965d805219b0e51d4343507ca00576b",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/ai-generated-c2.git",
+    "excluded": 0
+  },
+  {
+    "directory": ".retention-gui",
+    "branch": "codex/checkpoint-before-sequence-20261114-retention-gui",
+    "commit": "3ed53997d805c0d6b1defbe339ce3a0958335aa5",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/c2-GUI.git",
+    "excluded": 2
+  },
+  {
+    "directory": "publish-rdr-start",
+    "branch": "codex/checkpoint-before-sequence-20261114-publish-rdr-start",
+    "commit": "7f0106ff0647729bfcfd546cedf01651d949383e",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/ai-generated-c2.git",
+    "excluded": 0
+  },
+  {
+    "directory": ".",
+    "branch": "codex/checkpoint-before-sequence-20261114-workspace-staged",
+    "commit": "87306dc9df4d9e4a262653fbd814cee0d26a7aea",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/c2.git",
+    "excluded": 13240
+  },
+  {
+    "directory": ".",
+    "branch": "codex/checkpoint-before-sequence-20261114-workspace-files",
+    "commit": "685d681e640d36bdb8a26d7fe6a182ccf658ae27",
+    "remote": "https://github.com/LIG-Embedded-School-Team-2-WarWarden/c2.git",
+    "note": "작업 트리의 추가 소스·설계·문서와 백업 목록. 루트 작업 전 태그 대상."
+  }
+]

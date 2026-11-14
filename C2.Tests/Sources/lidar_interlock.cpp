@@ -42,7 +42,7 @@ int lidar_interlock_entry(){
     c2::fcs::Packet off{c2::fcs::MessageId::laser_reply};off.result=c2::fcs::Result::accepted;
     gate.off_reply(off,now+milliseconds(3));require(!gate.update(r,f,now+milliseconds(4)));
     f.status_received_at=now+milliseconds(5);require(gate.update(r,f,now+milliseconds(6)));
-    require(!gate.update(r,f,now+seconds(4)));require(gate.phase()==LidarInterlock::Phase::fault);
+    require(!gate.update(r,f,now+seconds(10)));require(gate.phase()==LidarInterlock::Phase::fault);
 
     // Real Session rejects malformed/old DE07 acknowledgements and retries the
     // original bytes. No status-only response can complete an ED07 operation.
@@ -64,7 +64,7 @@ int lidar_interlock_entry(){
     require(s.state().last_result==1); // Even latest OFF status needs a DE07 completion.
     c2::rdr::word(response,2,2);s.receive(response,1.3);
     require(s.state().last_result==0&&s.state().lidar_inhibited&&!s.state().lidar_on);
-    // ED07 expires at two seconds, stops retransmitting, and permits a new
+    // ED07 expires at six seconds, stops retransmitting, and permits a new
     // recovery request without waiting for the general 40-second timeout.
     c2::rdr::Session timeout;
     timeout.connect(0);auto connect=timeout.take().at(0);
@@ -73,21 +73,44 @@ int lidar_interlock_entry(){
     timeout.receive(ack,.01);require(timeout.command(0xED07,0,0,1)==1);
     const auto original=timeout.take().at(0);
     timeout.tick(2);require(timeout.take().at(0)==original);
-    timeout.tick(3);
+    uint16_t status_seq=2;
+    auto keep_connected=[&](double t){
+        timeout.tick(t);
+        for(auto p:timeout.take()){
+            if(c2::rdr::word(p,0)==0xED07&&t>=7&&t<8)require(false);
+            if(c2::rdr::word(p,0)!=0xED02)continue;
+            c2::rdr::word(p,0,0xDE02);c2::rdr::word(p,4,c2::rdr::word(p,2));
+            c2::rdr::word(p,2,status_seq++);c2::rdr::word(p,6,0);c2::rdr::word(p,20,0x259);
+            timeout.receive(p,t+.001);
+        }
+    };
+    for(int t=3;t<=7;++t)keep_connected(t);
     require(timeout.state().lidar_result==9&&timeout.state().last_result==9);
     for(const auto& packet:timeout.take())require(c2::rdr::word(packet,0)!=0xED07);
-    require(timeout.command(0xED07,1,0,3)==1);auto resume=timeout.take().at(0);
+    require(timeout.command(0xED07,1,0,7.1)==1);auto resume=timeout.take().at(0);
     require(c2::rdr::word(resume,2)!=c2::rdr::word(original,2));
     ack=original;c2::rdr::word(ack,0,0xDE07);c2::rdr::word(ack,2,2);
     c2::rdr::word(ack,4,c2::rdr::word(original,2));c2::rdr::word(ack,20,0x259);
-    timeout.receive(ack,3.01);require(timeout.state().lidar_result==1);
-    ack=resume;c2::rdr::word(ack,0,0xDE07);c2::rdr::word(ack,2,3);
+    timeout.receive(ack,7.11);require(timeout.state().lidar_result==1);
+    ack=resume;c2::rdr::word(ack,0,0xDE07);c2::rdr::word(ack,2,status_seq++);
     c2::rdr::word(ack,4,c2::rdr::word(resume,2));c2::rdr::word(ack,20,0x239);
-    timeout.receive(ack,3.02);require(timeout.state().lidar_result==0);
-    require(timeout.command(0xED07,0,0,4)==1);auto late=timeout.take().at(0);
+    timeout.receive(ack,7.12);require(timeout.state().lidar_result==0);
+    require(timeout.command(0xED07,0,0,8)==1);auto late=timeout.take().at(0);
     c2::rdr::word(late,0,0xDE07);c2::rdr::word(late,4,c2::rdr::word(late,2));
-    c2::rdr::word(late,2,4);c2::rdr::word(late,20,0x259);
-    timeout.receive(late,6);require(timeout.state().lidar_result==9);
-    require(timeout.command(0xED07,1,0,6)==1);
+    c2::rdr::word(late,2,status_seq++);c2::rdr::word(late,20,0x259);
+    for(int t=9;t<=14;++t)keep_connected(t);
+    timeout.receive(late,14.01);require(timeout.state().lidar_result==9);
+    require(timeout.command(0xED07,1,0,14.02)==1);
+
+    // SDK STOP success with unknown emission is a valid command completion,
+    // but never physical OFF evidence for the optical interlock.
+    c2::rdr::Session unknown;unknown.connect(0);auto h=unknown.take().at(0);
+    auto a=h;c2::rdr::word(a,0,0xDE01);c2::rdr::word(a,2,1);
+    c2::rdr::word(a,4,c2::rdr::word(h,2));c2::rdr::word(a,20,0x239);unknown.receive(a,.01);
+    require(unknown.command(0xED07,0,0,.1)==1);a=unknown.take().at(0);
+    c2::rdr::word(a,0,0xDE07);c2::rdr::word(a,4,c2::rdr::word(a,2));
+    c2::rdr::word(a,2,2);c2::rdr::word(a,20,0x249);unknown.receive(a,.2);
+    require(unknown.state().lidar_result==0&&!unknown.state().lidar_known);
+    LidarInterlock blocked;require(!blocked.stopped(unknown.state()));
     return 0;
 }

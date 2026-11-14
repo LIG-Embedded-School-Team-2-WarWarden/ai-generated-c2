@@ -131,7 +131,7 @@ def run(executable, scenario):
             def ask(command):
                 process.stdin.write(command + '\n')
                 process.stdin.flush()
-                return output.get(timeout=6)
+                return output.get(timeout=9)
             wait_for(lambda: ask('rdr status')['connected'])
             if scenario not in ('boot_fcs_disconnected', 'boot_fcs_disabled'):
                 wait_for(lambda: ask('fcs status')['connected'])
@@ -144,9 +144,13 @@ def run(executable, scenario):
                     assert board.mode == 0  # Recovery does not start surveillance.
                     board.events.clear()
                 if scenario == 'boot_unknown':
-                    assert gui.command(6, target=1) == 16
-                    assert ('rdr_start', 1) not in board.events and ('rdr', 1) not in board.events
-                    assert board.off_requests == 0
+                    # ICD v15: SDK preparation may complete with unknown emission,
+                    # but the GUI must not claim actual ON and output stays blocked.
+                    assert gui.command(6, target=1) == 0
+                    wait_for(lambda: gui.command(18) == 21,timeout=12)
+                    assert ('rdr_start',1) in board.events and ('rdr',1) in board.events
+                    assert not any(e[:2]==('fcs',1) for e in board.events)
+                    assert struct.unpack_from('<I',gui.frame(),40)[0]==0
                     gui.close(); gui = None
                     process.stdin.write('quit\n'); process.stdin.flush(); process.wait(timeout=8)
                     assert process.returncode == 0
