@@ -52,6 +52,9 @@ class Probe(Devices):
         super()._rdr_request(raw, peer, now)
 
     def _fcs_request(self, raw, peer, now):
+        if getattr(self, 'boot_fcs_disconnected', False):
+            self.events.append(('fcs_disconnected_request', struct.unpack_from('!H', raw)[0]))
+            return
         kind = struct.unpack_from('!H', raw)[0]
         if kind in (0xEF04, 0xEF05):
             value = struct.unpack_from('!H', raw, 6)[0] if kind == 0xEF04 else 1
@@ -104,6 +107,8 @@ def run(executable, scenario):
             for name, port in [('rdr', board.rdr_port), ('fcs', board.fcs_port)]:
                 config[name]['local'] = {'ip': '127.0.0.1', 'port': 0}
                 config[name]['peer'] = {'ip': '127.0.0.1', 'port': port}
+            if scenario == 'boot_fcs_disabled':
+                config['fcs']['enabled'] = False
             path = Path(directory) / 'config.json'
             path.write_text(json.dumps(config), encoding='utf-8')
             suffix = '_lidar_' + uuid.uuid4().hex
@@ -126,7 +131,8 @@ def run(executable, scenario):
                 process.stdin.flush()
                 return output.get(timeout=6)
             wait_for(lambda: ask('rdr status')['connected'])
-            wait_for(lambda: ask('fcs status')['connected'])
+            if scenario not in ('boot_fcs_disconnected', 'boot_fcs_disabled'):
+                wait_for(lambda: ask('fcs status')['connected'])
             if boot:
                 gui = Gui(suffix)
                 assert valid_count(gui.frame()) == 0
@@ -154,7 +160,12 @@ def run(executable, scenario):
                     assert board.off_requests >= 2, board.events
                 assert not any(e[:2] == ('fcs', 1) for e in board.events), board.events
                 off_event = ('fcs', 0, scenario not in ('boot_no_inhibit', 'gui_off_no_target'))
-                assert board.events.index(off_event) < board.events.index(('rdr_start', 1)) < board.events.index(('rdr', 1))
+                if scenario in ('boot_fcs_disconnected', 'boot_fcs_disabled'):
+                    assert board.off_requests == 0, board.events
+                    assert not any(e[0] == 'fcs_disconnected_request' and e[1] in (0xEF04, 0xEF05) for e in board.events), board.events
+                    assert board.events.index(('rdr_start', 1)) < board.events.index(('rdr', 1))
+                else:
+                    assert board.events.index(off_event) < board.events.index(('rdr_start', 1)) < board.events.index(('rdr', 1))
                 wait_for(lambda: gui.command(18) == 0)
                 assert struct.unpack_from('<I', gui.frame(), 40)[0] == 1
                 assert board.error is None, board.error
@@ -246,5 +257,6 @@ if __name__ == '__main__':
     for case in ('normal', 'legacy', 'bad_stop', 'drop_stop', 'drop_on_reply',
                  'manual_off_busy', 'manual_off_drop', 'manual_off_wrong_state', 'lost_stop_ack',
                  'boot_inhibited', 'boot_off_busy', 'boot_off_drop', 'gui_off_no_target',
-                 'boot_no_inhibit', 'boot_resume_drop', 'boot_off_failure'):
+                 'boot_no_inhibit', 'boot_resume_drop', 'boot_off_failure', 'boot_fcs_disconnected',
+                 'boot_fcs_disabled'):
         run(args.console.resolve(), case)

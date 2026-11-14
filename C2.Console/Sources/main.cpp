@@ -538,9 +538,9 @@ int main(int argc, char** argv) {
                 }
             }
             auto state = client?client->snapshot():fcs::Snapshot{};
-            if(client&&rdr_startup.active()) {
+            if(rdr_startup.active()) {
                 const auto previous=rdr_startup.phase;
-                try {rdr_startup.tick(*real_rdr,*real_control,*client,Clock::now());}
+                try {rdr_startup.tick(*real_rdr,*real_control,client.get(),Clock::now());}
                 catch(const std::exception& error) {
                     rdr_startup.fail(*real_control,gui::Result::fcs_off_unconfirmed);
                     log(std::string("RDR startup exception: ")+error.what());
@@ -736,10 +736,10 @@ int main(int argc, char** argv) {
                         else if(!rdr_state.lidar_supported)result=gui::Result::lidar_unsupported;
                         else if(!rdr_state.lidar_known)result=gui::Result::lidar_unknown;
                         else if(rdr_state.last_result==1)result=gui::Result::lidar_busy;
-                        else if(!client||!state.connected)result=gui::Result::fcs_off_unconfirmed;
                         else {
                             real_control->confirm_start(false);
                             rdr_startup.begin(request,rdr_state,Clock::now());
+                            if(!client||!state.connected)log("RDR startup: FCS disconnected; skipping FCS laser OFF confirmation");
                             log("RDR startup phase=fcs_off (request accepted; not yet operating)");
                             next_poll={};
                         }
