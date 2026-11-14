@@ -49,6 +49,7 @@ public:
 private:
     void diagnose(const std::string& message) const noexcept;
     std::optional<Packet> exchange(Packet request);
+    std::optional<Packet> exchange_locked(Packet request, bool session_probe = false);
     void receive(std::vector<std::byte> bytes, const Endpoint& source);
     ClientConfig config_;
     std::mutex request_mutex_;
@@ -56,6 +57,7 @@ private:
     std::condition_variable received_;
     bool stopped_{true};
     std::uint16_t next_sequence_{1};
+    std::optional<std::uint16_t> last_response_sequence_;
     std::optional<Packet> pending_, response_;
     std::chrono::steady_clock::time_point response_deadline_{};
     Snapshot state_;

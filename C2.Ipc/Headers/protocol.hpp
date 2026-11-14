@@ -23,13 +23,22 @@ constexpr wchar_t pipe_path[] = L"\\\\.\\pipe\\ECS_NamedPipe";
 enum class Command : std::uint32_t {
     status, assign, cancel, active, set_rdr_elevation,
     // A successful get_fcs_busy response reports busy in the active field.
-    set_asset_position, set_rdr_operating, get_fcs_busy
+    set_asset_position, set_rdr_operating, get_fcs_busy,
+    // Groups: 0 RDR zero XYZ, 1 FCS zero XYZ, 2 RDR min/max + FCS max (m).
+    // Group 3: RDR horizontal/vertical FOV in degrees, reserved zero.
+    // Device IDs must be zero. Get response words at offsets 20/24/28 carry
+    // IEEE754 float bits, not asset/target/assignment state. Frame ABI is unchanged.
+    get_camera_settings, set_camera_settings
 };
 enum class Result : std::uint32_t {
     success, invalid_request, asset_unavailable, not_assigned,
     already_assigned, not_supported, device_error,
     status_pending, target_pending, target_changed, device_fault, alignment_required,
-    device_busy, response_timeout, device_rejected
+    device_busy, response_timeout, device_rejected,
+    lidar_unsupported, lidar_unknown, lidar_recovery_required, lidar_stop_unconfirmed,
+    lidar_disconnected, lidar_busy,
+    lidar_resume_unconfirmed, fcs_off_unconfirmed, rdr_start_unconfirmed,
+    device_invalid_value
 };
 enum class Assignment : std::uint32_t { idle, adjusting, assigned, failed, waiting };
 

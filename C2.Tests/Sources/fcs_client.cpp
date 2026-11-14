@@ -189,15 +189,14 @@ void client_tests() {
             check(diagnostics.find(expected)!=std::string::npos, "wire diagnostic identifies injected failures");
     }
     inject_noise = false;
-    response_sequence = 65535;
     const auto status = client.query();
     check(status && status->elevation == -125 && status->azimuth == 453, "raw status tenths of degrees");
-    check(status->sequence == 65535, "reply sequence maximum");
+    check(status->sequence == 2, "fresh reply after handshake status probe");
     check(client.snapshot().status.has_value(), "status snapshot");
     check(client.snapshot().status->elevation == -12.5 && client.snapshot().status->azimuth == 45.3,
           "status converted to degrees");
     const auto pointed = client.point(-10.5, 90.2);
-    check(pointed && pointed->sequence == 0, "accept wrapped firmware reply sequence");
+    check(pointed && pointed->sequence == 3, "accept forward firmware reply sequence");
     check(pointed_elevation == -105 && pointed_azimuth == 902, "point degrees converted to wire tenths");
     const auto light = client.laser(true);
     check(light && light->laser_state == 1, "laser reply");
@@ -237,7 +236,14 @@ void client_tests() {
     for (int i = 0; i < 3; ++i) (void)client.query();
     check(!client.snapshot().connected, "three misses disconnect");
     rejects([&] { (void)client.demo(); });
+    check(!client.connect() && !client.snapshot().connected,
+          "accepted handshake without fresh status is not a usable connection");
+    rejects([&] { (void)client.demo(); });
+    drop_status = false;
+    response_sequence = 65534;
     check(client.connect().has_value() && client.snapshot().connected, "reconnect");
+    check(client.query()->sequence == 0, "fresh reply sequence wraps through zero");
+    drop_status = true;
     auto waiting = std::async(std::launch::async, [&] { return client.query(); });
     std::this_thread::sleep_for(20ms);
     client.stop();

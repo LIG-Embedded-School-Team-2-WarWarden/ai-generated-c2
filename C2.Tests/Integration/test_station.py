@@ -411,6 +411,28 @@ def main():
                 frame = gui.wait(lambda raw: any(t[0] == 7 and t[4:7] == (5, 7, 2.5)
                     for t in target_records(raw)))
                 check_point((5, 7, 2.5), (-.5, 1, .25))
+                # Live XYZ zero calibration changes both GUI world coordinates and EF03 angles.
+                rdr.observations = [(7, (-4, 2, 5), 0, 1800)]
+                assert gui.command(9, target=0, rdr=0, fcs=0, xyz=(.25, -.5, .75)) == 0
+                assert gui.command(9, target=1, rdr=0, fcs=0, xyz=(-.25, .5, -.25)) == 0
+                gui.wait(lambda raw: any(t[0] == 7 and t[4:7] == (5.25, 6.5, 3.25)
+                    for t in target_records(raw)))
+                check_point((5.25, 6.5, 3.25), (-.75, 1.5, 0))
+                # Changing calibration invalidates an existing alignment, without moving by itself.
+                assert gui.command(1, target=7) == 0
+                before = len(fcs.point_events)
+                assert gui.command(9, target=1, rdr=0, fcs=0, xyz=(.25, -.5, .25)) == 0
+                assert len(fcs.point_events) == before
+                assert gui.command(3, target=7) != 0
+                check_point((5.25, 6.5, 3.25), (-.25, .5, .5))
+                # Disk reload follows the same calibration path.
+                saved = json.loads(config_path.read_text())
+                saved['installation']['camera']['rdr_zero'] = [-.5, .25, -.25]
+                config_path.write_text(json.dumps(saved))
+                gui.wait(lambda raw: any(t[0] == 7 and t[4:7] == (4.5, 7.25, 2.25)
+                    for t in target_records(raw)))
+                check_point((4.5, 7.25, 2.25), (-.25, .5, .5))
+                rdr.observations = []
                 # The shared filter must never keep an expired target usable.
                 gui.wait(lambda raw: valid_count(raw) == 0, timeout=5)
                 before = len(fcs.wire)
@@ -454,9 +476,10 @@ def main():
             assert gui.command(1, target=7) == 0
             assert (fcs.elevation, fcs.azimuth) == (-27, 1919)
             assert gui.command(2, target=7) == 0
-            fcs.point_result = 2  # Device INVALID_VALUE must remain a device rejection.
+            fcs.point_result = 2  # Preserve INVALID_VALUE through the legacy GUI pipe.
             points = sum(packet[:2] == b'\xef\x03' for packet in fcs.wire)
-            assert gui.command(1, target=7) == 6
+            assert gui.command(1, target=7) == 24
+            assert gui.last_response[6] == 0  # Rejected target must not become assigned.
             assert sum(packet[:2] == b'\xef\x03' for packet in fcs.wire) == points + 1
             fcs.point_result = 0
             # The same fixed (east,north,up)=(2,3,1) observed at two poses.

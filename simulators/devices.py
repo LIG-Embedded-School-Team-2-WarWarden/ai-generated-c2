@@ -22,6 +22,7 @@ class Devices:
         self.retired_ids = set()
         self.error = None
         self.connected = self.reporting = False
+        self.lidar_inhibited = False
         self.mode = self.token = self.rdr_tx = self.rx = 0
         self.rdr_peer = None
         self.last_receive = 0
@@ -89,7 +90,9 @@ class Devices:
         self.rdr_tx = (self.rdr_tx + 1) & 65535
         return [kind, self.rdr_tx, rx, a, b, self.token >> 16, self.token & 65535,
                 result, round(self.tilt * 10), round(self.pan * 10),
-                int(self.connected) | (4 if self.reporting else 0) | (self.mode << 8), 0]
+                int(self.connected) | (4 if self.reporting else 0) | (self.mode << 8) |
+                24 | (64 if self.lidar_inhibited else 0) |
+                (32 if self.mode == 2 and not self.lidar_inhibited else 0), 0]
 
     def _send_rdr(self, fields):
         if self.rdr_peer and self.scenario != 'rdr-offline':
@@ -100,7 +103,7 @@ class Devices:
             return
         q = list(struct.unpack('!12H', raw))
         kind, seq = q[:2]
-        if kind not in (0xED01, 0xED02, 0xED03, 0xED04, 0xED06):
+        if kind not in (0xED01, 0xED02, 0xED03, 0xED04, 0xED06, 0xED07):
             return
         self.received['RDR'] += 1
         token = (q[5] << 16) | q[6]
@@ -131,6 +134,11 @@ class Devices:
             self.mode = 1 if q[3] else 3
             self.pending = (now + .35, raw, q)
             response = self._packet(0xDE06, seq, q[3], result=1)
+        elif kind == 0xED07:
+            valid = q[3] in (0, 1) and q[4] == 0
+            if valid:
+                self.lidar_inhibited = q[3] == 0
+            response = self._packet(0xDE07, seq, q[3], q[4], result=0 if valid else 2)
         self.cache[seq] = raw, response
         if len(self.cache) > 128:
             del self.cache[next(iter(self.cache))]
@@ -162,6 +170,8 @@ class Devices:
             enabled = struct.unpack_from('!H', raw, 6)[0]
             result = 0 if enabled in (0, 1) else 2
             self.laser_until = now + 1 if enabled == 1 and not result else 0
+            if enabled == 0:
+                self.demo_until = 0
         elif kind == 0xEF05:
             if self.scenario == 'fcs-fault':
                 result = 3
@@ -225,7 +235,7 @@ class Devices:
                             except BlockingIOError:
                                 break
                             handler(raw, peer, now)
-                    if self.connected and self.reporting and self.mode == 2 and self.scenario != 'rdr-offline' and now >= report_at:
+                    if self.connected and self.reporting and self.mode == 2 and not self.lidar_inhibited and self.scenario != 'rdr-offline' and now >= report_at:
                         report_at = now + .2
                         scene=self.targets if self.targets is not None else [
                             {'id':1001+i,'xyz':(-1.4+.3*i,2.8+.5*i,.35+.065*i)} for i in range(self.target_count)]

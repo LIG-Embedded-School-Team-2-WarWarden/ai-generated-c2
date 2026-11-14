@@ -30,6 +30,9 @@ class Board:
         self.requests = []
         self.wire = []
         self.echo_arguments = True
+        self.lidar_supported = True
+        self.lidar_inhibited = False
+        self.lidar_stop_result = 0
         self.pan, self.tilt = 1980, 123
         self.track_state = 1
         # (ID, raw sensor XYZ, observation TILT, observation PAN).
@@ -43,7 +46,9 @@ class Board:
     def packet(self, kind, rx=0, a=0, b=0, result=0):
         self.tx = (self.tx + 1) & 65535
         return [kind, self.tx, rx, a, b, self.token >> 16, self.token & 65535,
-                result, self.tilt, self.pan, int(self.connected) | (4 if self.reporting else 0) | (self.mode << 8), 0]
+                result, self.tilt, self.pan, int(self.connected) | (4 if self.reporting else 0) | (self.mode << 8) |
+                ((24 | (64 if self.lidar_inhibited else 0) |
+                (32 if self.mode == 2 and not self.lidar_inhibited else 0)) if self.lidar_supported else 0), 0]
 
     def send(self, fields):
         if self.peer and not self.drop:
@@ -67,7 +72,7 @@ class Board:
                         response[3] = response[4] = 0
                     self.cache[request[1]] = response
                     self.send(response)
-                if self.connected and self.reporting and self.mode == 2 and not self.drop and now >= emit:
+                if self.connected and self.reporting and self.mode == 2 and not self.lidar_inhibited and not self.drop and now >= emit:
                     emit = now + 0.15
                     # Independent sensor-frame fixtures at observation PAN=1980,
                     # TILT=123. Their world east/north/up positions are
@@ -91,7 +96,7 @@ class Board:
                     continue
                 assert len(data) == 24, f"Unexpected RDR datagram length: {len(data)}"
                 request = list(struct.unpack("!12H", data))
-                assert request[0] in (0xED01, 0xED02, 0xED03, 0xED04, 0xED06)
+                assert request[0] in (0xED01, 0xED02, 0xED03, 0xED04, 0xED06, 0xED07)
                 self.requests.append(request[0])
                 self.wire.append(data)
                 if self.drop:
@@ -132,6 +137,13 @@ class Board:
                     else:
                         self.stops += 1
                     response = self.packet(0xDE06, request[1], request[3], result=1)
+                elif request[0] == 0xED07:
+                    result = self.lidar_stop_result if request[3] == 0 else 0
+                    if not self.lidar_supported or request[3] not in (0, 1) or request[4]:
+                        result = 2
+                    if result == 0:
+                        self.lidar_inhibited = request[3] == 0
+                    response = self.packet(0xDE07, request[1], request[3], request[4], result=result)
                 self.cache[request[1]] = response
                 if response is not None and not self.echo_arguments and request[0] in (0xED04, 0xED06):
                     response[3] = response[4] = 0

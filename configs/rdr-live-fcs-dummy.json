@@ -1,0 +1,89 @@
+{
+  "fcs": {
+    "enabled": true,
+    "local": {
+      "ip": "127.0.0.1",
+      "port": 0
+    },
+    "peer": {
+      "ip": "127.0.0.1",
+      "port": 22000
+    },
+    "protocol": "effe"
+  },
+  "installation": {
+    "camera": {
+      "fcs_zero": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ranges": [
+        1.5,
+        3.0,
+        3.0
+      ],
+      "rdr_horizontal_fov_deg": 120.0,
+      "rdr_vertical_fov_deg": 45.0,
+      "rdr_zero": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "devices": {
+      "FCS-1": {
+        "position": [
+          0.0,
+          0.5,
+          0.0
+        ],
+        "role": "EFF"
+      },
+      "RDR-1": {
+        "position": [
+          0.0,
+          -0.5,
+          0.0
+        ],
+        "role": "OBS"
+      }
+    },
+    "effector": "FCS-1",
+    "observer": "RDR-1"
+  },
+  "rdr": {
+    "gui_kalman": {
+      "adaptive_motion": true,
+      "enabled": true,
+      "measurement_stddev_m": 0.03,
+      "measurement_stddev_xyz_m": [
+        0.025,
+        0.018,
+        0.005
+      ],
+      "motion_process_stddev_m_sqrt_s": 0.08,
+      "motion_process_stddev_xyz_m_sqrt_s": [
+        0.06666667,
+        0.048,
+        0.01333333
+      ],
+      "motion_trigger_sigma": 2.5,
+      "process_stddev_m_sqrt_s": 0.01,
+      "process_stddev_xyz_m_sqrt_s": [
+        0.0075,
+        0.0054,
+        0.0012
+      ]
+    },
+    "local": {
+      "ip": "192.168.0.102",
+      "port": 1000
+    },
+    "peer": {
+      "ip": "192.168.0.101",
+      "port": 1000
+    },
+    "protocol": "edde24"
+  }
+}
