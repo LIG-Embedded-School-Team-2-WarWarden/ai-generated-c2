@@ -13,23 +13,23 @@ public:
     Block block_reason(const c2::rdr::State& r) const {
         if(!r.connected)return Block::disconnected;
         if(!r.lidar_supported)return Block::unsupported;
-        if(!r.lidar_known)return Block::unknown;
+        if(!r.lidar_known&&!r.thermal_warning())return Block::unknown;
+        if(r.thermal_fault())return Block::recovery_required;
         if(phase_!=Phase::idle||r.lidar_inhibited)return Block::recovery_required;
         if(r.last_result==1)return Block::busy;
         return Block::none;
     }
     bool begin(const c2::rdr::State& r,Clock::time_point now) {
         // Unknown emission must not prevent requesting STOP. Only stopped()
-        // may authorize output, after a matching ACK and confirmed physical OFF.
-        if(!r.connected||!r.lidar_supported||phase_!=Phase::idle||
+        // may authorize output: confirmed OFF, or fresh thermal 7/8 plus matching STOP completion.
+        if(r.thermal_fault()||!r.connected||!r.lidar_supported||phase_!=Phase::idle||
            r.lidar_inhibited||r.last_result==1)return false;
         generation_=r.generation;phase_=Phase::stopping;started_=now;
         seen_emission_=off_confirmed_=false;return true;
     }
     bool stopped(const c2::rdr::State& r) const {
         return phase_==Phase::stopping&&r.connected&&r.generation==generation_&&
-            r.lidar_request==0&&r.lidar_result==0&&r.lidar_supported&&
-            r.lidar_known&&!r.lidar_on&&r.lidar_inhibited;
+            r.stop_completed();
     }
     void emitted(Clock::time_point now) {phase_=Phase::held;started_=now;}
     void fail() {phase_=Phase::fault;off_confirmed_=false;}
@@ -40,6 +40,7 @@ public:
     }
     // True requests ED07=1 once. FE02 must be newer than the output/OFF command.
     bool update(const c2::rdr::State& r,const c2::fcs::Snapshot& f,Clock::time_point now) {
+        if(r.thermal_fault()){fail();return false;}
         if(phase_==Phase::restoring){
             if(!r.connected||r.generation!=generation_||now-started_>=std::chrono::duration<double>(c2::rdr::lidar_command_timeout_seconds)||
                r.lidar_result>1)fail();

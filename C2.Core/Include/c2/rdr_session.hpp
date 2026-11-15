@@ -34,6 +34,13 @@ struct State {
     bool connected{},reporting{};uint16_t mode{},motor{2};
     bool lidar_supported{},lidar_known{},lidar_on{},lidar_inhibited{};
     uint16_t lidar_request{},lidar_result{}; // ED07 completion survives unrelated commands.
+    uint16_t sensor_state{255};bool sensor_health_valid{},thermal_protective_stop{};
+    double sensor_health_at{};
+    bool thermal_warning()const{return sensor_health_valid&&(sensor_state==7||sensor_state==8);}
+    bool thermal_fault()const{return thermal_protective_stop||(sensor_health_valid&&sensor_state==9);}
+    bool stop_completed()const{return connected&&lidar_supported&&lidar_inhibited&&
+        lidar_request==0&&lidar_result==0&&!lidar_on&&!thermal_fault()&&
+        ((lidar_known&&!lidar_on)||(!lidar_known&&thermal_warning()));}
     int pan{-32768},tilt{-32768};std::map<uint16_t,Target> targets;
     std::set<uint16_t> excluded;
     uint16_t last_result{},last_command{}; // 0..8 board result; 9 local timeout
@@ -45,7 +52,8 @@ class Session {
     bool wanted_=false,have_data_=false,have_status_=false;
     double last_status_=0,next_poll_=0;
     std::optional<Pending> hello_,operation_;
-    std::map<uint16_t,double> polls_;
+    std::map<uint16_t,double> polls_,health_polls_;
+    bool health_enabled_=false,have_health_=false;uint16_t health_sequence_{};
     std::deque<uint16_t> issued_;
     std::vector<Packet> outgoing_;
     State state_;
@@ -71,7 +79,7 @@ class Session {
     void fresh_session(double now){
         if(++token_==0)++token_;
         sequence_=uint16_t(token_^ (token_>>16));have_data_=have_status_=false;
-        state_={};state_.generation=++generation_;state_.last_result=1;state_.last_command=0xED01;polls_.clear();issued_.clear();operation_.reset();outgoing_.clear();
+        state_={};state_.generation=++generation_;state_.last_result=1;state_.last_command=0xED01;polls_.clear();health_polls_.clear();have_health_=false;issued_.clear();operation_.reset();outgoing_.clear();
         diagnostic("RDR","session_start",{{"session",token_},{"generation",generation_}});
         hello_=Pending{make(0xED01),now,now};outgoing_.push_back(hello_->packet);
     }
@@ -83,6 +91,7 @@ class Session {
         have_status_=true;status_sequence_=tx;state_.mode=flags>>8;state_.reporting=(flags&4)!=0;
         state_.lidar_supported=(flags&8)!=0;state_.lidar_known=(flags&16)!=0;
         state_.lidar_on=(flags&32)!=0;state_.lidar_inhibited=(flags&64)!=0;
+        state_.thermal_protective_stop|=(flags&128)!=0;
         diagnostic("RDR","status_accepted",{{"message_id",word(p,0)},{"tx_seq",tx},{"reply_to",word(p,4)},
             {"session",token_},{"generation",generation_},{"flags",flags},{"mode",state_.mode},
             {"reporting",state_.reporting},{"lidar_supported",state_.lidar_supported},
@@ -96,6 +105,7 @@ class Session {
     }
 public:
     explicit Session(uint32_t seed=1):token_(seed?seed:1){}
+    void enable_sensor_health(bool enabled=true){health_enabled_=enabled;}
     const State& state()const{return state_;}
     std::vector<Packet> take(){auto out=std::move(outgoing_);outgoing_.clear();return out;}
     uint16_t connect(double now){wanted_=true;if(state_.connected)return 0;if(!hello_)fresh_session(now);return 1;}
@@ -160,6 +170,20 @@ public:
             return;
         }
         if(!state_.connected){reject("not_connected");return;}
+        if(msg==0xDE08){
+            auto it=health_polls_.find(rx);
+            if(it==health_polls_.end()||now-it->second>2.5){reject("health_unmatched_or_expired");return;}
+            if(word(p,14)||word(p,6)>255||word(p,8)>3){reject("health_invalid_fields");return;}
+            if(have_health_&&!newer(tx,health_sequence_)){reject("health_stale_sequence");return;}
+            health_polls_.erase(it);have_health_=true;health_sequence_=tx;
+            state_.sensor_health_valid=(word(p,8)&1)&&word(p,6)!=255;
+            state_.sensor_state=state_.sensor_health_valid?word(p,6):255;
+            state_.thermal_protective_stop|=(word(p,8)&2)!=0;
+            state_.sensor_health_at=now;
+            diagnostic("RDR","sensor_health",{{"state",state_.sensor_state},{"valid",state_.sensor_health_valid},
+                {"protective_stop",state_.thermal_protective_stop},{"session",token_},{"tx_seq",tx},{"reply_to",rx}});
+            return;
+        }
         if(msg==0xDE02&&polls_.erase(rx)){
             if(word(p,14)==0&&status(p,now)){
                 if(operation_&&word(operation_->packet,0)==0xED03&&
@@ -205,6 +229,7 @@ public:
             return;
         }
         expire_operation(now);
+        if(now-state_.sensor_health_at>=2.5){state_.sensor_health_valid=false;state_.sensor_state=255;}
         if(operation_){
             if(now-operation_->last>=1){
                 auto&p=*operation_;
@@ -212,7 +237,9 @@ public:
                 outgoing_.push_back(p.packet);p.last=now;
             }
         }
-        if(now>=next_poll_){auto p=make(0xED02);polls_[word(p,2)]=now;outgoing_.push_back(p);next_poll_=now+1;}
+        if(now>=next_poll_){auto p=make(0xED02);polls_[word(p,2)]=now;outgoing_.push_back(p);next_poll_=now+1;
+            if(health_enabled_){auto h=make(0xED08);health_polls_[word(h,2)]=now;outgoing_.push_back(h);}}
+        for(auto it=health_polls_.begin();it!=health_polls_.end();)if(now-it->second>2.5)it=health_polls_.erase(it);else ++it;
         for(auto it=polls_.begin();it!=polls_.end();)if(now-it->second>4)it=polls_.erase(it);else ++it;
         for(auto it=state_.targets.begin();it!=state_.targets.end();){
             auto&t=it->second;

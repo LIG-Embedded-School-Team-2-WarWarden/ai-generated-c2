@@ -3,6 +3,7 @@
 #include "c2/rdr_session.hpp"
 #include "c2/fcs_client.hpp"
 #include "fcs_angles.hpp"
+#include "rdr_coordinates.hpp"
 #include <chrono>
 #include <cmath>
 
@@ -17,6 +18,7 @@ public:
     Phase phase{Phase::none};
     uint32_t target{}; uint64_t generation{};
     double pan{},tilt{},resume_sample{};
+    std::optional<c2::rdr::BasePoint> capture_reference;
     Result reason{Result::success};
     bool output_seen{}, recovery_requested{}, result_started{};
     Clock::time_point began{},paused_at{};
@@ -48,17 +50,17 @@ public:
     }
     void fail(Result why) {if(phase!=Phase::failed)failed_step=completed_step();phase=Phase::failed;reason=why;}
     static bool stopped(const c2::rdr::State& r) {
-        return r.connected&&r.lidar_supported&&r.lidar_known&&!r.lidar_on&&
-            r.lidar_inhibited&&r.lidar_request==0&&r.lidar_result==0;
+        return r.stop_completed();
     }
     static bool resumed(const c2::rdr::State& r) {
-        return r.connected&&r.mode==2&&r.reporting&&r.lidar_supported&&
+        return !r.thermal_fault()&&r.connected&&r.mode==2&&r.reporting&&r.lidar_supported&&
             !r.lidar_inhibited&&r.lidar_request==1&&r.lidar_result==0;
     }
     void tick(const c2::rdr::State& r,const c2::fcs::Snapshot& f,bool same_target,
               Clock::time_point now,double sample_now) {
         if(!active()||terminal())return;
         if(!r.connected||r.generation!=generation){fail(Result::lidar_disconnected);return;}
+        if(r.thermal_fault()){fail(Result::lidar_thermal_fault);return;}
         if(r.mode!=2||!r.reporting){fail(Result::target_pending);return;}
         if(!f.connected||!f.status||now-f.status_received_at>std::chrono::seconds(2)){
             fail(Result::status_pending);return;
@@ -75,19 +77,19 @@ public:
             if(!same_target||!aligned||(flags&14))fail(Result::alignment_required);
         } else if(phase==Phase::pausing) {
             if(r.lidar_result>1||now-began>=std::chrono::duration<double>(c2::rdr::lidar_command_timeout_seconds)){
-                fail(Result::lidar_stop_unconfirmed);return;
+                fail(r.thermal_warning()?Result::lidar_stop_warning_unconfirmed:Result::lidar_stop_unconfirmed);return;
             }
             if(stopped(r)&&fresh&&aligned&&!(flags&14))enter(Phase::paused,now);
         } else if(phase==Phase::paused) {
             if(!stopped(r)||!aligned||(flags&14))fail(Result::lidar_stop_unconfirmed);
         } else if(phase==Phase::firing) {
-            if(!stopped(r)){fail(Result::lidar_stop_unconfirmed);return;}
+            if(!stopped(r)){fail(r.thermal_warning()?Result::lidar_stop_warning_unconfirmed:Result::lidar_stop_unconfirmed);return;}
             if(fresh&&(flags&12))output_seen=true;
             if(fresh&&output_seen&&!(flags&14))enter(Phase::fired,now);
             else if(now-began>std::chrono::seconds(8))fail(Result::fcs_off_unconfirmed);
         } else if(phase==Phase::fired) {
             // Operator-paced wait after confirmed completion; no pause deadline.
-            if(!stopped(r)){fail(Result::lidar_stop_unconfirmed);return;}
+            if(!stopped(r)){fail(r.thermal_warning()?Result::lidar_stop_warning_unconfirmed:Result::lidar_stop_unconfirmed);return;}
             if(flags&14){fail(Result::fcs_off_unconfirmed);return;}
         } else if(phase==Phase::resuming) {
             if(flags&14){fail(Result::fcs_off_unconfirmed);return;}
@@ -100,9 +102,21 @@ public:
             const auto it=r.targets.find(uint16_t(target));
             if(it!=r.targets.end()&&it->second.seen>resume_sample&&
                it->second.track_state==1&&it->second.detected==1){enter(Phase::alive,now);return;}
-            // A packet gap, LOST, or a changed ID is NOT evidence of a hit.
-            // No hit is synthesized without an independently confirmed result.
-            if(now-began>=std::chrono::seconds(3))fail(Result::result_unconfirmed);
+            // A replacement ID at the capture position still means an object remains.
+            if(capture_reference)for(const auto& [id,t]:r.targets) {
+                const auto& ref=*capture_reference;
+                const auto point=c2::rdr::sensor_to_base(t);
+                if(point&&t.seen>resume_sample&&t.track_state==1&&t.detected==1&&
+                   std::hypot(point->east-ref.east,point->north-ref.north,point->up-ref.up)<=0.15) {
+                    enter(Phase::alive,now);return;
+                }
+            }
+            if(now-began>=std::chrono::seconds(3)) {
+                // Camera workflow result, not verification of an image file.
+                if(output_seen&&result_started&&capture_reference&&r.lidar_known&&r.lidar_on&&!(flags&14))
+                    enter(Phase::hit,now);
+                else fail(Result::result_unconfirmed);
+            }
         }
         if((phase==Phase::pausing||phase==Phase::paused||phase==Phase::firing)&&
            now-paused_at>=std::chrono::seconds(10))fail(Result::pause_timeout);

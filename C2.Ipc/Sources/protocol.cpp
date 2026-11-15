@@ -111,10 +111,10 @@ bool deserialize(std::span<const std::uint8_t> bytes, PipeCommand& value) {
 bool deserialize(std::span<const std::uint8_t> bytes, PipeResponse& value) {
     PipeResponse v;
     if (!read(bytes, response_size, v) || v.magic != pipe_magic || v.version != pipe_version ||
-        v.result > 25 || (v.command != 8 && v.assignment > 4 &&
+        v.result > 27 || (v.command != 8 && v.command!=1110 && v.command!=1111 && v.assignment > 4 &&
             !(v.assignment>=101&&v.assignment<=108)&&v.assignment!=110&&v.assignment!=111) ||
         v.active > (v.command==1010?8u:1u) || v.connected > 1) return false;
-    if (v.command == 8 && v.result == 0 &&
+    if ((v.command == 8 || v.command==1110 || v.command==1111) && v.result == 0 &&
         (!std::isfinite(std::bit_cast<float>(v.fcs_id)) ||
          !std::isfinite(std::bit_cast<float>(v.target_id)) ||
          !std::isfinite(std::bit_cast<float>(v.assignment)))) return false;

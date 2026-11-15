@@ -12,6 +12,7 @@
 #include <windows.h>
 
 #include <nlohmann/json.hpp>
+#include "fcs_geometry.hpp"
 
 // Common installation positions (forward,left,up) used by the map and FCS
 // assignment calculation. Raw RDR targets are first rotated with their observation
@@ -20,6 +21,7 @@ struct InstallationConfig {
     std::array<double, 3> rdr_position{}, eff_position{};
     // Additive motor command angles: PAN, TILT, reserved (zero), in degrees.
     std::array<double, 3> fcs_angle_offset_deg{};
+    FcsGeometry fcs_geometry{};
     std::array<double, 3> ranges{1.5, 10.0, 3.0};
     std::array<double, 3> rdr_fov{120.0, 45.0, 0.0};
     std::string observer_id{"RDR-1"}, effector_id{"FCS-1"};
@@ -76,6 +78,13 @@ inline std::array<double, 3> camera_triple(const nlohmann::json& value) {
     return result;
 }
 inline void validate_camera_settings(const InstallationConfig& value) {
+    (void)camera_triple(value.fcs_geometry.translation);
+    (void)camera_triple(value.fcs_geometry.rotation);
+    (void)camera_triple(value.fcs_geometry.rdr_anchor);
+    (void)camera_triple(value.fcs_geometry.fcs_anchor);
+    if(std::hypot(value.fcs_geometry.rotation[0],value.fcs_geometry.rotation[1],value.fcs_geometry.rotation[2])>std::numbers::pi+1e-5 ||
+       std::hypot(value.fcs_geometry.translation[0],value.fcs_geometry.translation[1],value.fcs_geometry.translation[2])>100)
+        throw std::invalid_argument("3D calibration rotation/translation outside supported range");
     (void)camera_triple(value.fcs_angle_offset_deg);
     if (std::abs(value.fcs_angle_offset_deg[0])>180 ||
         std::abs(value.fcs_angle_offset_deg[1])>90 || value.fcs_angle_offset_deg[2]!=0)
@@ -116,6 +125,15 @@ inline InstallationConfig parse_installation_config(const nlohmann::json& config
         const auto& camera=config.at("camera");
         if (!camera.is_object()) throw std::invalid_argument("camera must be an object");
         if (camera.contains("fcs_angle_offset_deg")) result.fcs_angle_offset_deg=camera_triple(camera.at("fcs_angle_offset_deg"));
+        if(camera.contains("fcs_geometry")) {
+            const auto& g=camera.at("fcs_geometry");
+            if(g.at("version")!=1)throw std::invalid_argument("Unsupported FCS geometry version");
+            auto& out=result.fcs_geometry;out.enabled=g.at("enabled").get<bool>();
+            out.translation=camera_triple(g.at("translation_m"));out.rotation=camera_triple(g.at("rotation_rad"));
+            out.rdr_anchor=camera_triple(g.at("rdr_anchor"));out.fcs_anchor=camera_triple(g.at("fcs_anchor"));
+            // A changed installation invalidates this measured transform.
+            if(out.rdr_anchor!=result.rdr_position || out.fcs_anchor!=result.eff_position)out.enabled=false;
+        }
         if (camera.contains("ranges")) result.ranges=camera_triple(camera.at("ranges"));
         result.rdr_fov=camera_triple(nlohmann::json::array({
             camera.value("rdr_horizontal_fov_deg", nlohmann::json(120.0)),
@@ -170,6 +188,10 @@ inline void save_installation_settings(const std::filesystem::path& path,
     devices[value.effector_id]["position"] = value.eff_position;
     validate_camera_settings(value);
     settings["camera"]["fcs_angle_offset_deg"]=value.fcs_angle_offset_deg;
+    const auto& geometry=value.fcs_geometry;
+    settings["camera"]["fcs_geometry"]={{"version",1},{"enabled",geometry.enabled},
+        {"translation_m",geometry.translation},{"rotation_rad",geometry.rotation},
+        {"rdr_anchor",geometry.rdr_anchor},{"fcs_anchor",geometry.fcs_anchor}};
     settings["camera"].erase("rdr_zero"); // Remove retired keys when saving older files.
     settings["camera"].erase("fcs_zero");
     settings["camera"]["ranges"]=value.ranges;

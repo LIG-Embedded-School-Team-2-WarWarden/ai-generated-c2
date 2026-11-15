@@ -32,6 +32,8 @@ enum class Command : std::uint32_t {
     get_camera_settings, set_camera_settings,
     // Read-only: assignment=optical state known (0/1), active=known ON (0/1).
     get_rdr_lidar_state=19,
+    // target_id=raw SDK state, assignment=valid, active=latched protective stop.
+    get_rdr_sensor_health=20,
     register_manual_target=1001, confirm_manual_assignment=1002,
     start_manual_aim=1003, pause_manual_scan=1004, start_manual_fire=1005,
     confirm_manual_fire=1006, resume_manual_scan=1007,
@@ -47,7 +49,7 @@ enum class Result : std::uint32_t {
     lidar_unsupported, lidar_unknown, lidar_recovery_required, lidar_stop_unconfirmed,
     lidar_disconnected, lidar_busy,
     lidar_resume_unconfirmed, fcs_off_unconfirmed, rdr_start_unconfirmed,
-    result_unconfirmed, pause_timeout
+    result_unconfirmed, pause_timeout, lidar_thermal_fault, lidar_stop_warning_unconfirmed
 };
 enum class Assignment : std::uint32_t { idle, adjusting, assigned, failed, waiting };
 
