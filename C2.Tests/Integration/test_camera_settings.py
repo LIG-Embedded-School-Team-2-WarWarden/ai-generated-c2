@@ -7,11 +7,56 @@ import struct
 import tempfile
 import time
 from test_installation_persistence import running, positions, ROOT
+from rdr_board import Board
+from test_station import target_records
 
 
 def read(gui, group):
     assert gui.command(8, target=group, rdr=0, fcs=0) == 0
     return struct.unpack('<3f', struct.pack('<3I', *gui.last_response[5:8]))
+
+
+def check_calibrated_coordinates(exe):
+    board = Board()
+    board.observations = [(7, (-2, 1, 3), 0, 1800)]
+    try:
+        with tempfile.TemporaryDirectory(prefix='calibration-test-', dir=ROOT) as folder:
+            runtime = Path(folder)
+            config = json.loads((ROOT / 'configs/team-demo.json').read_text(encoding='utf-8'))
+            config['rdr']['local'] = {'ip': '127.0.0.1', 'port': 0}
+            config['rdr']['peer'] = {'ip': '127.0.0.1', 'port': board.port}
+            config['fcs']['enabled'] = False
+            path = runtime / 'config.json'
+            path.write_text(json.dumps(config), encoding='utf-8')
+            def xyz(gui, expected):
+                return gui.wait(lambda f: any(r[0] == 7 and r[9] and
+                    all(abs(a-b) < 1e-4 for a,b in zip(r[4:7],expected))
+                    for r in target_records(f)))
+            def start(gui):
+                gui.wait(lambda f: struct.unpack_from('<I', f, 44)[0] != 0)
+                assert gui.command(6, target=1) == 0
+            with running(exe, runtime, path) as gui:
+                start(gui)
+                xyz(gui, (2,3,1))
+                assert gui.command(5, rdr=1, fcs=0, xyz=(10,20,30)) == 0
+                xyz(gui, (12,23,31))
+                for group in (0,1):
+                    for command in (8,9):
+                        assert gui.command(command,target=group,rdr=0,fcs=0,xyz=(4,5,6)) == 1
+                saved=json.loads(path.read_text())
+                saved['installation'].setdefault('camera',{}).update(rdr_zero=[9,8,7],fcs_zero=[6,5,4])
+                path.write_text(json.dumps(saved))
+                time.sleep(.8)
+                xyz(gui,(12,23,31)) # Retired keys cannot move objects on reload.
+            with running(exe,runtime,path) as gui:
+                start(gui)
+                xyz(gui,(12,23,31)) # Nor on restart.
+                assert gui.command(9,target=4,rdr=0,fcs=0,xyz=(1,2,0))==0
+                camera=json.loads(path.read_text())['installation']['camera']
+                assert 'rdr_zero' not in camera and 'fcs_zero' not in camera
+    finally:
+        board.close()
+    assert board.error is None, board.error
 
 
 def main():
@@ -28,17 +73,18 @@ def main():
         config['user_note'] = {'keep': [1, 2, 3]}
         path = runtime / 'config.json'
         path.write_text(json.dumps(config), encoding='utf-8')
-        expected = [(1.25, -2.5, 3.75), (-4, 5, -6), (2, 12, 4), (90, 60, 0)]
+        expected = {2:(2,12,4),3:(90,60,0),4:(2.5,-3.5,0)}
         with running(exe, runtime, path) as gui:
-            assert read(gui, 0) == (0, 0, 0)
-            assert read(gui, 1) == (0, 0, 0)
+            assert gui.command(8,target=0,rdr=0,fcs=0)==1
+            assert gui.command(8,target=1,rdr=0,fcs=0)==1
             assert read(gui, 2) == (1.5, 10, 3)
             assert read(gui, 3) == (120, 45, 0)
+            assert read(gui, 4) == (0, 0, 0)
             gui.wait(lambda f: struct.unpack_from('<f', f, 68)[0] == 120)
             assert gui.command(5, rdr=1, fcs=0, xyz=(10, 20, 30)) == 0
             gui.wait(lambda f: positions(f)[0] == (10, 20, 30))
             installation_before = positions(gui.frame())
-            for group, values in enumerate(expected):
+            for group, values in expected.items():
                 assert gui.command(9, target=group, rdr=0, fcs=0, xyz=values) == 0
                 assert read(gui, group) == values
             gui.wait(lambda f: struct.unpack_from('<f', f, 68)[0] == expected[3][0])
@@ -53,12 +99,17 @@ def main():
                 assert gui.command(9, target=2, rdr=0, fcs=0, xyz=values) == 1
                 assert path.read_bytes() == before
                 assert read(gui, 2) == expected[2]
-            assert gui.command(9, target=4, rdr=0, fcs=0) == 1
+            assert gui.command(9, target=5, rdr=0, fcs=0) == 1
             assert gui.command(9, target=0, rdr=1, fcs=0) == 1
             for values in [(0,45,0), (361,45,0), (120,181,0), (120,-1,0), (float('inf'),45,0), (120,45,1)]:
                 assert gui.command(9, target=3, rdr=0, fcs=0, xyz=values) == 1
                 assert read(gui, 3) == expected[3]
                 assert path.read_bytes() == before
+            for values in [(181,0,0), (0,-91,0), (0,0,1), (float('nan'),0,0), (0,float('inf'),0)]:
+                assert gui.command(9, target=4, rdr=0, fcs=0, xyz=values) == 1
+                assert read(gui, 4) == expected[4]
+                assert path.read_bytes() == before
+            assert stored['installation']['camera']['fcs_angle_offset_deg'] == list(expected[4])
             kernel = ctypes.WinDLL('kernel32', use_last_error=True)
             kernel.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
             kernel.CreateFileW.restype = ctypes.c_void_p
@@ -70,6 +121,8 @@ def main():
                 assert read(gui, 2) == expected[2]
                 assert gui.command(9, target=3, rdr=0, fcs=0, xyz=(100, 70, 0)) == 6
                 assert read(gui, 3) == expected[3]
+                assert gui.command(9, target=4, rdr=0, fcs=0, xyz=(1,2,0)) == 6
+                assert read(gui, 4) == expected[4]
                 assert struct.unpack_from('<f', gui.frame(), 68)[0] == expected[3][0]
                 assert path.read_bytes() == before
             finally:
@@ -83,10 +136,11 @@ def main():
             assert read(gui, 2) == expected[2]
             path.write_bytes(before)
         with running(exe, runtime, path) as gui:
-            for group, values in enumerate(expected):
+            for group, values in expected.items():
                 assert read(gui, group) == values
             gui.wait(lambda f: positions(f) == installation_before and struct.unpack_from('<f', f, 68)[0] == expected[3][0])
-    print('PASS: defaults, separate positions, save/restore, finite/range validation, failed-save rollback, metadata, invalid reload')
+    check_calibrated_coordinates(exe)
+    print('PASS: installation-only XYZ, retired IPC rejection, old keys ignored on reload/restart and removed on save; defaults, separate positions, save/restore, finite/range validation, failed-save rollback, metadata, invalid reload')
 
 if __name__ == '__main__':
     main()

@@ -3,7 +3,7 @@
 #include "c2/fcs_client.hpp"
 #include "c2/rdr_session.hpp"
 
-// Non-blocking GUI start transaction. Never treats ED06 acceptance as optical readiness.
+// ED07 completion confirms SDK control, not physical emission ON/OFF.
 class RdrStartup {
 public:
     using Clock=std::chrono::steady_clock;
@@ -60,7 +60,7 @@ public:
         } else if(phase==Phase::resuming) {
             if(r.lidar_result>1){fail(control,R::lidar_resume_unconfirmed);return;}
             if(r.lidar_request==1&&r.lidar_result==0&&r.mode==2&&r.reporting&&
-                r.lidar_supported&&r.lidar_known&&r.lidar_on&&!r.lidar_inhibited) {
+                r.lidar_supported&&!r.lidar_inhibited) {
                 control.confirm_start(true);phase=Phase::complete;result=R::success;
             }
         }

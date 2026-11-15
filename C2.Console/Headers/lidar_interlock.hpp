@@ -19,7 +19,10 @@ public:
         return Block::none;
     }
     bool begin(const c2::rdr::State& r,Clock::time_point now) {
-        if(block_reason(r)!=Block::none)return false;
+        // Unknown emission must not prevent requesting STOP. Only stopped()
+        // may authorize output, after a matching ACK and confirmed physical OFF.
+        if(!r.connected||!r.lidar_supported||phase_!=Phase::idle||
+           r.lidar_inhibited||r.last_result==1)return false;
         generation_=r.generation;phase_=Phase::stopping;started_=now;
         seen_emission_=off_confirmed_=false;return true;
     }
@@ -41,7 +44,7 @@ public:
             if(!r.connected||r.generation!=generation_||now-started_>=std::chrono::duration<double>(c2::rdr::lidar_command_timeout_seconds)||
                r.lidar_result>1)fail();
             else if(r.lidar_request==1&&r.lidar_result==0&&r.lidar_supported&&
-                    r.lidar_known&&!r.lidar_inhibited&&r.lidar_on==(r.mode==2))phase_=Phase::idle;
+                    !r.lidar_inhibited)phase_=Phase::idle;
             return false;
         }
         if(phase_!=Phase::held)return false;
@@ -51,7 +54,7 @@ public:
         if(!(flags&1)||(flags&16))return false;
         if(flags&12){seen_emission_=true;return false;}
         if(!seen_emission_&&!off_confirmed_)return false;
-        if(!r.connected||!r.lidar_supported||!r.lidar_known)return false;
+        if(!r.connected||!r.lidar_supported)return false;
         // Recovery after a reconnect requires an explicit acknowledged FCS OFF.
         if(r.generation!=generation_&&!off_confirmed_)return false;
         if(r.last_result==1)return false;

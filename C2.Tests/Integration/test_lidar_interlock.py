@@ -38,7 +38,7 @@ class Probe(Devices):
         if self.legacy:
             p[10] &= ~120
         if getattr(self, 'boot_unknown', False):
-            p[10] &= ~16
+            p[10] &= ~(16 | 32)
         if self.bad_stop and kind == 0xDE07 and p[3] == 0:
             p[10] |= 32  # A success result with actual ON must never permit FCS ON.
         return p
@@ -147,10 +147,12 @@ def run(executable, scenario):
                     # ICD v15: SDK preparation may complete with unknown emission,
                     # but the GUI must not claim actual ON and output stays blocked.
                     assert gui.command(6, target=1) == 0
-                    wait_for(lambda: gui.command(18) == 21,timeout=12)
+                    wait_for(lambda: gui.command(18) == 0,timeout=12)
                     assert ('rdr_start',1) in board.events and ('rdr',1) in board.events
                     assert not any(e[:2]==('fcs',1) for e in board.events)
-                    assert struct.unpack_from('<I',gui.frame(),40)[0]==0
+                    wait_for(lambda: struct.unpack_from('<I',gui.frame(),40)[0]==1)
+                    assert gui.command(19) == 0
+                    assert gui.last_response[7:10] == (0, 0, 1)
                     gui.close(); gui = None
                     process.stdin.write('quit\n'); process.stdin.flush(); process.wait(timeout=8)
                     assert process.returncode == 0

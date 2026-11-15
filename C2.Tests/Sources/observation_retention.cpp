@@ -16,7 +16,7 @@ int observation_retention_entry(){
     // Sensor data can expire or explicitly report LOST during the pause.
     r.targets.clear();control.clear();display=memory.update(r,control,{},5,false);
     check(display.size()==1&&display[0].world.east==1);
-    r.lidar_inhibited=false;r.lidar_on=true;
+    r.lidar_inhibited=false;r.lidar_known=false;r.lidar_on=false;
     display=memory.update(r,control,{},6,true);check(display[0].status==5);
     r.targets[7].seen=5.9;r.targets[7].track_state=1;r.targets[7].detected=1;
     control={p};display=memory.update(r,control,{},6.1,true);

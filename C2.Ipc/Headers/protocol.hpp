@@ -24,15 +24,20 @@ enum class Command : std::uint32_t {
     status, assign, cancel, active, set_rdr_elevation,
     // A successful get_fcs_busy response reports busy in the active field.
     set_asset_position, set_rdr_operating, get_fcs_busy,
-    // Groups: 0 RDR zero XYZ, 1 FCS zero XYZ, 2 RDR min/max + FCS max (m).
+    // Groups 0/1 retired (invalid_request); 2 RDR min/max + FCS max (m).
     // Group 3: RDR horizontal/vertical FOV in degrees, reserved zero.
+    // Group 4: FCS PAN/TILT additive angle offsets in degrees, reserved zero.
     // Device IDs must be zero. Get response words at offsets 20/24/28 carry
     // IEEE754 float bits, not asset/target/assignment state. Frame ABI is unchanged.
     get_camera_settings, set_camera_settings,
+    // Read-only: assignment=optical state known (0/1), active=known ON (0/1).
+    get_rdr_lidar_state=19,
     register_manual_target=1001, confirm_manual_assignment=1002,
     start_manual_aim=1003, pause_manual_scan=1004, start_manual_fire=1005,
     confirm_manual_fire=1006, resume_manual_scan=1007,
-    confirm_manual_result=1008, retry_manual_assignment=1009
+    confirm_manual_result=1008, retry_manual_assignment=1009,
+    // Read-only: result=reason, assignment=current state, active=completed step.
+    get_manual_status=1010
 };
 enum class Result : std::uint32_t {
     success, invalid_request, asset_unavailable, not_assigned,
@@ -41,7 +46,8 @@ enum class Result : std::uint32_t {
     device_busy, response_timeout, device_rejected,
     lidar_unsupported, lidar_unknown, lidar_recovery_required, lidar_stop_unconfirmed,
     lidar_disconnected, lidar_busy,
-    lidar_resume_unconfirmed, fcs_off_unconfirmed, rdr_start_unconfirmed
+    lidar_resume_unconfirmed, fcs_off_unconfirmed, rdr_start_unconfirmed,
+    result_unconfirmed, pause_timeout
 };
 enum class Assignment : std::uint32_t { idle, adjusting, assigned, failed, waiting };
 

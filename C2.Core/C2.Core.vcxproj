@@ -120,6 +120,6 @@
     <ClInclude Include="Include\nlohmann\thirdparty\hedley\hedley.hpp" />
     <ClInclude Include="Include\nlohmann\thirdparty\hedley\hedley_undef.hpp" />
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup><ClInclude Include="Include\c2\diagnostic_log.hpp" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

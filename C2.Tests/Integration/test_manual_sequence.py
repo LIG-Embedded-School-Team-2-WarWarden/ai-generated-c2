@@ -45,9 +45,18 @@ def run(executable,scenario):
             send(1002,5);send(1006,5);send(1008,5)
             send(1005,1) # Cannot skip directly to emission.
             send(1003);until(103)
-            if scenario=='unknown':board.boot_unknown=True
+            if scenario in ('unknown','unknown_then_off'):
+                board.boot_unknown=True
+                wait_for(lambda: gui.command(19)==0 and gui.last_response[7]==0)
             if scenario=='drop_stop':board.drop_stop=True
             send(1004)
+            if scenario in ('unknown','unknown_then_off'):
+                wait_for(lambda: ('rdr',0) in board.events)
+                wait_for(lambda: board.lidar_inhibited)
+                assert not any(e[:2]==('fcs',1) for e in board.events)
+                assert state()!=104 # A successful STOP ACK with unknown OFF is not completion.
+                send(1005,1) # Cannot emit while physical OFF remains unknown.
+                if scenario=='unknown_then_off':board.boot_unknown=False
             if scenario in ('unknown','drop_stop'):
                 until(3,9)
                 assert not any(e[:2]==('fcs',1) for e in board.events)
@@ -67,12 +76,21 @@ def run(executable,scenario):
                     until(106)
                     assert sum(e[:2]==('fcs',1) for e in board.events)==1,board.events
                     time.sleep(.25);assert board.lidar_inhibited # No automatic resume.
+                    if scenario=='wait_after_fire':
+                        time.sleep(12) # Beyond the old pause limit, with fresh device states.
+                        assert state()==106,gui.last_response
+                        gui.command(1010)
+                        assert gui.last_response[4]==0 and gui.last_response[7:9]==(106,6),gui.last_response
+                        assert board.lidar_inhibited
+                        gui.wait(lambda f:any(t[0]==target and t[8]==4 and not t[9] for t in target_records(f)))
                     if scenario=='missing':board.scenario='empty'
                     if scenario=='new_id':
                         with board.lock:board.targets=[{'id':2001,'xyz':(-1.4,2.8,.35)}]
                     send(1007);until(107)
                     if scenario in ('missing','new_id'):
                         until(3);assert state()!=108 # Absence/new identity never becomes HIT.
+                        gui.command(1010)
+                        assert gui.last_response[4]==24 and gui.last_response[7:9]==(3,7),gui.last_response
                         if scenario=='missing':
                             assert ask('sequence confirm-hit '+str(target))['source']=='operator'
                             until(108)
@@ -107,5 +125,5 @@ if __name__=='__main__':
     # while testing the production client's intentionally short 80ms deadline.
     ctypes.windll.winmm.timeBeginPeriod(1)
     try:
-        for s in ([a.scenario] if a.scenario else ['normal','cancel','unknown','drop_stop','missing','new_id','five']):run(a.console.resolve(),s)
+        for s in ([a.scenario] if a.scenario else ['normal','cancel','unknown','unknown_then_off','drop_stop','missing','new_id','five','wait_after_fire']):run(a.console.resolve(),s)
     finally:ctypes.windll.winmm.timeEndPeriod(1)

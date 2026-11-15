@@ -1,4 +1,5 @@
 #pragma once
+#include "diagnostic_log.hpp"
 // RDR-ECS controls are 24 bytes. DE03 carries raw sensor XYZ, observation
 // PAN/TILT and TrackState in a 32-byte big-endian packet.
 #include <array>
@@ -52,6 +53,8 @@ class Session {
         if(!operation_)return;
         const bool lidar=word(operation_->packet,0)==0xED07;
         if(now-operation_->born>=(lidar?lidar_command_timeout_seconds:40.0)){
+            diagnostic("RDR","command_timeout",{{"message_id",word(operation_->packet,0)},
+                {"tx_seq",word(operation_->packet,2)},{"session",token_},{"elapsed_ms",(now-operation_->born)*1000}});
             if(lidar)state_.lidar_result=9;
             operation_.reset();state_.last_result=9;
         }
@@ -69,14 +72,22 @@ class Session {
         if(++token_==0)++token_;
         sequence_=uint16_t(token_^ (token_>>16));have_data_=have_status_=false;
         state_={};state_.generation=++generation_;state_.last_result=1;state_.last_command=0xED01;polls_.clear();issued_.clear();operation_.reset();outgoing_.clear();
+        diagnostic("RDR","session_start",{{"session",token_},{"generation",generation_}});
         hello_=Pending{make(0xED01),now,now};outgoing_.push_back(hello_->packet);
     }
     bool status(std::span<const uint8_t> p,double now){
-        const auto tx=word(p,2);if(have_status_&&!newer(tx,status_sequence_))return false;
-        const auto flags=word(p,20);if((flags>>8)>4)return false;
+        const auto tx=word(p,2);if(have_status_&&!newer(tx,status_sequence_)){
+            diagnostic("RDR","status_rejected",{{"reason","stale_sequence"},{"tx_seq",tx},{"previous_seq",status_sequence_}});return false;}
+        const auto flags=word(p,20);if((flags>>8)>4){
+            diagnostic("RDR","status_rejected",{{"reason","invalid_mode"},{"flags",flags},{"tx_seq",tx}});return false;}
         have_status_=true;status_sequence_=tx;state_.mode=flags>>8;state_.reporting=(flags&4)!=0;
         state_.lidar_supported=(flags&8)!=0;state_.lidar_known=(flags&16)!=0;
         state_.lidar_on=(flags&32)!=0;state_.lidar_inhibited=(flags&64)!=0;
+        diagnostic("RDR","status_accepted",{{"message_id",word(p,0)},{"tx_seq",tx},{"reply_to",word(p,4)},
+            {"session",token_},{"generation",generation_},{"flags",flags},{"mode",state_.mode},
+            {"reporting",state_.reporting},{"lidar_supported",state_.lidar_supported},
+            {"lidar_known",state_.lidar_known},{"lidar_on",state_.lidar_on},{"lidar_inhibited",state_.lidar_inhibited},
+            {"result",word(p,14)}});
         state_.pan=signed_word(p,18);state_.tilt=signed_word(p,16);
         if(word(p,0)==0xDE02)state_.motor=std::min<uint16_t>(2,word(p,6));
         if(!state_.reporting||state_.mode!=2){invalidate();have_data_=true;data_sequence_=tx;}
@@ -102,31 +113,36 @@ public:
         state_.last_command=msg;state_.last_result=1;return 1;
     }
     void receive(std::span<const uint8_t> p,double now){
-        if(p.size()<6)return;
+        auto reject=[&](const char* reason){
+            diagnostic("RDR","rx_rejected",{{"reason",reason},{"session",token_},{"length",p.size()},
+                {"message_id",p.size()>=2?word(p,0):0},{"tx_seq",p.size()>=4?word(p,2):0},
+                {"reply_to",p.size()>=6?word(p,4):0}});
+        };
+        if(p.size()<6){reject("short_header");return;}
         const auto msg=word(p,0),rx=word(p,4),tx=word(p,2);
         if(msg==0xDE03){
-            if(p.size()!=32||!state_.connected||state_.mode!=2||!state_.reporting||!word(p,6))return;
-            for(unsigned i=28;i<32;++i)if(p[i])return;
+            if(p.size()!=32||!state_.connected||state_.mode!=2||!state_.reporting||!word(p,6)){reject("target_length_or_state_or_id");return;}
+            for(unsigned i=28;i<32;++i)if(p[i]){reject("target_padding");return;}
             const auto detected=word(p,24),track_state=word(p,26);
-            if(track_state>2||detected!=(track_state==1?1:0))return;
+            if(track_state>2||detected!=(track_state==1?1:0)){reject("track_state_detected_mismatch");return;}
             auto coordinate=[&](unsigned n){return std::bit_cast<float>((uint32_t(word(p,n))<<16)|word(p,n+2));};
             const float x=coordinate(8),y=coordinate(12),z=coordinate(16);
-            if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z))return;
+            if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z)){reject("nonfinite_xyz");return;}
             const int tilt=signed_word(p,20),pan=signed_word(p,22);
-            if(track_state==0&&(x!=0||y!=0||z!=0||tilt!=-32768||pan!=-32768))return;
-            if(std::find(issued_.begin(),issued_.end(),rx)==issued_.end())return;
-            if(have_data_&&!newer(tx,data_sequence_))return;
+            if(track_state==0&&(x!=0||y!=0||z!=0||tilt!=-32768||pan!=-32768)){reject("invalid_lost_payload");return;}
+            if(std::find(issued_.begin(),issued_.end(),rx)==issued_.end()){reject("unknown_reply_to");return;}
+            if(have_data_&&!newer(tx,data_sequence_)){reject("stale_target_sequence");return;}
             have_data_=true;data_sequence_=tx;auto id=word(p,6);
-            if(state_.excluded.count(id))return;
+            if(state_.excluded.count(id)){reject("excluded_target");return;}
             if(!state_.targets.count(id)&&state_.targets.size()>=10){
                 // A full set of expired tracks must not reject newly observed
                 // identities for the entire 60 s diagnostic retention period.
-                if(track_state!=1)return;
+                if(track_state!=1){reject("target_capacity_predicted");return;}
                 auto victim=state_.targets.end();
                 for(auto it=state_.targets.begin();it!=state_.targets.end();++it)
                     if(!state_.excluded.count(it->first)&&(it->second.status==2||now-it->second.seen>3)&&
                        (victim==state_.targets.end()||it->second.seen<victim->second.seen))victim=it;
-                if(victim==state_.targets.end())return;
+                if(victim==state_.targets.end()){reject("target_capacity");return;}
                 state_.targets.erase(victim);
             }
             auto&t=state_.targets[id];t.id=id;t.seen=now;
@@ -135,13 +151,15 @@ public:
             t.x=x;t.y=y;t.z=z;t.pan=pan;t.tilt=tilt;
             return;
         }
-        if(p.size()!=24||token(p)!=token_||word(p,14)>8||word(p,22))return;
+        if(p.size()!=24){reject("control_length");return;}
+        if(token(p)!=token_){reject("session_mismatch");return;}
+        if(word(p,14)>8||word(p,22)){reject("control_result_or_padding");return;}
         expire_operation(now); // A late completion cannot revive an expired request.
         if(msg==0xDE01&&hello_&&rx==word(hello_->packet,2)){
             if(word(p,14)==0&&status(p,now)){state_.connected=true;state_.last_result=0;hello_.reset();next_poll_=now;}
             return;
         }
-        if(!state_.connected)return;
+        if(!state_.connected){reject("not_connected");return;}
         if(msg==0xDE02&&polls_.erase(rx)){
             if(word(p,14)==0&&status(p,now)){
                 if(operation_&&word(operation_->packet,0)==0xED03&&
@@ -151,20 +169,22 @@ public:
             }
             return;
         }
-        if(!operation_||rx!=word(operation_->packet,2)||msg!=(0xDE00|(word(operation_->packet,0)&255)))return;
-        if(msg==0xDE07&&(word(p,6)!=word(operation_->packet,6)||word(p,8)))return;
+        if(!operation_||rx!=word(operation_->packet,2)||msg!=(0xDE00|(word(operation_->packet,0)&255))){reject("no_matching_operation");return;}
+        if(msg==0xDE07&&(word(p,6)!=word(operation_->packet,6)||word(p,8))){reject("lidar_echo_mismatch");return;}
         const auto code=word(p,14);
         if(msg==0xDE07){
             const auto flags=word(p,20);
             if(code==0&&(!(flags&8)||
                 (word(p,6)==0?(!(flags&64)||(flags&32)):
-                    ((flags&64)||((flags&16)&&bool(flags&32)!=((flags>>8)==2))))))return;
+                    ((flags&64)||((flags&16)&&bool(flags&32)!=((flags>>8)==2)))))){reject("lidar_completion_flags");return;}
             // A cached final reply may precede a newer DE02. Never roll status
             // back, but accept its matching completion if current status agrees.
             if(!status(p,now)&&(code!=0||!state_.lidar_supported||
                 (word(p,6)==0?(!state_.lidar_inhibited||(state_.lidar_known&&state_.lidar_on)):
-                    (state_.lidar_inhibited||(state_.lidar_known&&state_.lidar_on!=(state_.mode==2))))))return;
+                    (state_.lidar_inhibited||(state_.lidar_known&&state_.lidar_on!=(state_.mode==2)))))){reject("stale_lidar_completion_conflict");return;}
         }else status(p,now);
+        diagnostic("RDR","command_reply",{{"message_id",msg},{"tx_seq",tx},{"reply_to",rx},{"session",token_},
+            {"result",code},{"elapsed_ms",(now-operation_->born)*1000}});
         state_.last_result=code;
         if(msg==0xDE07)state_.lidar_result=code;
         if(code==1)return;

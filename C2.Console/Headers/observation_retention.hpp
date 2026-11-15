@@ -24,7 +24,7 @@ public:
     // Invalidates control coordinates in place; returned points also contain
     // retained positions with valid=false/status=4 paused or 5 reacquiring.
     std::vector<CorrectedTarget> update(const State& r,std::vector<CorrectedTarget>& control,
-        BasePoint origin,double now,bool resume_confirmed) {
+        BasePoint origin,double now,bool resume_confirmed,bool completed_manual_wait=false) {
         if(!active_){
             // Display-cache lifetime must never bypass a physical inhibit.
             if(r.lidar_inhibited)for(auto& p:control){p.valid=false;p.status=2;}
@@ -39,21 +39,21 @@ public:
             // gate or the evidence of observations already received after resume.
             held_.clear();origin_=origin;
         }
-        if(!resumed_flag_&&resume_confirmed&&r.lidar_supported&&r.lidar_known&&
-           !r.lidar_inhibited&&r.lidar_on) {
-            if(now-started_>=pause_limit_s)held_.clear();
+        if(!resumed_flag_&&resume_confirmed&&r.lidar_supported&&
+           !r.lidar_inhibited) {
+            if(!completed_manual_wait&&now-started_>=pause_limit_s)held_.clear();
             resumed_flag_=true;resumed_=now;
         }
-        if((!resumed_flag_&&now-started_>=pause_limit_s)||
+        if((!resumed_flag_&&!completed_manual_wait&&now-started_>=pause_limit_s)||
            (resumed_flag_&&now-resumed_>=reacquire_limit_s))held_.clear();
         for(auto it=held_.begin();it!=held_.end();)
             if(r.excluded.contains(it->first))it=held_.erase(it);else ++it;
         for(auto& p:control) {
             const auto raw=r.targets.find(p.id);
-            if(resumed_flag_&&!r.lidar_inhibited&&r.lidar_known&&r.lidar_on&&p.valid&&
+            if(resumed_flag_&&!r.lidar_inhibited&&p.valid&&
                raw!=r.targets.end()&&raw->second.track_state==1&&raw->second.detected==1&&
                raw->second.seen>resumed_) {observed_.insert(p.id);held_.erase(p.id);}
-            if(!resumed_flag_||r.lidar_inhibited||!r.lidar_known||!r.lidar_on||!observed_.contains(p.id)) {
+            if(!resumed_flag_||r.lidar_inhibited||!observed_.contains(p.id)) {
                 p.valid=false;p.status=2;
             }
         }

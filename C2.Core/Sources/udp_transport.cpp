@@ -1,4 +1,5 @@
 #include "c2/udp_transport.hpp"
+#include "c2/diagnostic_log.hpp"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -11,6 +12,23 @@
 
 namespace c2 {
 namespace {
+void trace_datagram(const char* event,const UdpConfig& local,const Endpoint& peer,
+    std::span<const std::byte> bytes,int error=0) noexcept {
+    try {
+        static constexpr char digits[]="0123456789abcdef";
+        std::string hex;const auto count=std::min<std::size_t>(bytes.size(),4096);
+        hex.reserve(count*2);
+        for(std::size_t i=0;i<count;++i){auto b=std::to_integer<unsigned>(bytes[i]);hex+=digits[b>>4];hex+=digits[b&15];}
+        nlohmann::json fields={{"local_ip",local.bind_address},{"local_port",local.listen_port},
+            {"peer_ip",peer.address},{"peer_port",peer.port},{"length",bytes.size()},
+            {"hex",hex},{"truncated",count!=bytes.size()},{"socket_error",error}};
+        if(bytes.size()>=6) {
+            auto word=[&](unsigned n){return (std::to_integer<unsigned>(bytes[n])<<8)|std::to_integer<unsigned>(bytes[n+1]);};
+            fields["message_id"]=word(0);fields["tx_seq"]=word(2);fields["reply_to"]=word(4);
+        }
+        diagnostic("UDP",event,std::move(fields));
+    }catch(...){}
+}
 SOCKET native_socket(const std::uintptr_t value) noexcept {
     return static_cast<SOCKET>(value);
 }
@@ -81,6 +99,9 @@ void UdpTransport::start() {
             socket_.store(static_cast<std::uintptr_t>(created));
         }
         running_.store(true);
+        const auto bound=local_endpoint();
+        config_.bind_address=bound.address;config_.listen_port=bound.port;
+        diagnostic("UDP","start",{{"local_ip",bound.address},{"local_port",bound.port}});
         receiver_ = std::thread(&UdpTransport::receive_loop, this);
     } catch (...) {
         running_.store(false);
@@ -130,10 +151,12 @@ void UdpTransport::send(
     if (sent == SOCKET_ERROR || static_cast<std::size_t>(sent) != bytes.size()) {
         ++send_errors_;
         last_socket_error_.store(sent == SOCKET_ERROR ? WSAGetLastError() : 0);
+        trace_datagram("tx_error",config_,destination,bytes,last_socket_error_.load());
         throw std::runtime_error("failed to send UDP datagram");
     }
     ++sent_datagrams_;
     sent_bytes_ += bytes.size();
+    trace_datagram("tx",config_,destination,bytes);
 }
 
 Endpoint UdpTransport::local_endpoint() const {
@@ -169,6 +192,7 @@ void UdpTransport::receive_loop() noexcept {
             if (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK) continue;
             ++receive_errors_;
             last_socket_error_.store(error);
+            diagnostic("UDP","rx_error",{{"local_port",config_.listen_port},{"socket_error",error}});
             // UDP ICMP port-unreachable and oversized packets are per-datagram
             // failures, not a reason to kill a long-lived receive socket.
             if (error == WSAECONNRESET || error == WSAEMSGSIZE) continue;
@@ -177,11 +201,13 @@ void UdpTransport::receive_loop() noexcept {
 
         ++received_datagrams_;
         received_bytes_ += received;
+        trace_datagram("rx",config_,endpoint_from(source_address),std::span(buffer.data(),static_cast<std::size_t>(received)));
         try {
             std::vector<std::byte> datagram(buffer.begin(), buffer.begin() + received);
             handler_(std::move(datagram), endpoint_from(source_address));
         } catch (...) {
             ++handler_errors_;
+            diagnostic("UDP","handler_error",{{"local_port",config_.listen_port}});
             // A consumer failure must not terminate the process or the receive thread.
         }
     }

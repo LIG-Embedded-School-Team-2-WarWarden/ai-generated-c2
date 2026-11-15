@@ -1,7 +1,40 @@
 #include "lidar_interlock.hpp"
+#include "rdr_startup.hpp"
 #include <stdexcept>
 static void require(bool b){if(!b)throw std::runtime_error("lidar interlock contract failed");}
 int lidar_interlock_entry(){
+    { // SDK completion with unknown emission; pending, failed and timeout paths.
+        struct Driver {
+            c2::rdr::State r;
+            auto snapshot(){return r;}
+            int command(int,int){r.lidar_request=1;r.lidar_result=1;return 1;}
+        } d;
+        struct Control {
+            bool confirmed{};
+            c2::ipc::PipeResponse set_operating(const c2::ipc::PipeCommand&){return {};}
+            void cancel_start(){}
+            void confirm_start(bool value){confirmed=value;}
+        } control;
+        d.r.connected=d.r.reporting=d.r.lidar_supported=true;d.r.mode=2;
+        const auto t=RdrStartup::Clock::now();
+        c2::fcs::Client* absent=nullptr;
+        auto prepare=[&](RdrStartup& startup){
+            d.r.lidar_result=0;startup.begin({},d.r,t);
+            startup.tick(d,control,absent,t);startup.tick(d,control,absent,t);
+            require(startup.phase==RdrStartup::Phase::resuming);
+        };
+        RdrStartup success;prepare(success);
+        success.tick(d,control,absent,t+std::chrono::milliseconds(5100));
+        require(success.active()&&!control.confirmed);
+        d.r.lidar_result=0;success.tick(d,control,absent,t+std::chrono::milliseconds(5500));
+        require(control.confirmed&&success.phase==RdrStartup::Phase::complete&&!d.r.lidar_known);
+        RdrStartup failed;prepare(failed);d.r.lidar_result=5;
+        failed.tick(d,control,absent,t+std::chrono::seconds(1));
+        require(failed.phase==RdrStartup::Phase::failed&&!control.confirmed);
+        RdrStartup timeout;prepare(timeout);
+        timeout.tick(d,control,absent,t+std::chrono::seconds(6));
+        require(timeout.phase==RdrStartup::Phase::failed&&!control.confirmed);
+    }
     using namespace std::chrono;
     const auto now=LidarInterlock::Clock::now();
     c2::rdr::State r;r.connected=true;r.generation=1;r.mode=2;
@@ -11,6 +44,15 @@ int lidar_interlock_entry(){
     require(!gate.begin(r,now)); // Legacy board must not enable optical output.
     r.lidar_supported=true;
     require(gate.block_reason(r)==Block::unknown);
+    {
+        LidarInterlock stop;
+        require(stop.begin(r,now));
+        auto ack=r;ack.lidar_request=0;ack.lidar_result=0;ack.lidar_inhibited=true;
+        require(!stop.stopped(ack)); // ACK alone, with unknown OFF, is insufficient.
+        ack.lidar_known=true;ack.lidar_on=true;require(!stop.stopped(ack));
+        ack.lidar_on=false;ack.lidar_result=1;require(!stop.stopped(ack));
+        ack.lidar_result=0;require(stop.stopped(ack));
+    }
     r.lidar_known=true;r.connected=false;
     require(gate.block_reason(r)==Block::disconnected);
     r.connected=true;r.lidar_inhibited=true;

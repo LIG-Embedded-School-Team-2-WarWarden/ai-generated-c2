@@ -338,6 +338,11 @@ def main():
                 frame = gui.wait(lambda raw: any(t[0] == 7 and t[4:7] == (5, 7, 2.5)
                     for t in target_records(raw)))
                 check_point((5, 7, 2.5), (-.5, 1, .25))
+                # Calibration shares the same domain coordinates as the map,
+                # while original installation remains independently editable.
+                assert gui.command(9,target=0,rdr=0,fcs=0,xyz=(.5,-1,.25))==1
+                assert gui.command(9,target=1,rdr=0,fcs=0,xyz=(1,-.5,.75))==1
+                check_point((5,7,2.5),(-.5,1,.25))
                 # The shared filter must never keep an expired target usable.
                 gui.wait(lambda raw: valid_count(raw) == 0, timeout=5)
                 before = len(fcs.wire)

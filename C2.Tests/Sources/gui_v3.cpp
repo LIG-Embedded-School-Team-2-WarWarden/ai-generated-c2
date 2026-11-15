@@ -23,15 +23,20 @@ struct GuiDriver {
 };
 int gui_v3_entry() {
     namespace gui=c2::ipc;
-    for(unsigned code=15;code<=23;++code) {
+    for(unsigned code=15;code<=25;++code) {
         gui::PipeResponse response;response.command=3;response.result=code;
         gui::PipeResponse parsed_response;
         check(gui::deserialize(gui::serialize(response),parsed_response) && parsed_response.result==code,
             "optical interlock diagnostic response roundtrip");
     }
-    gui::PipeResponse invalid_response;invalid_response.result=24;
+    gui::PipeResponse invalid_response;invalid_response.result=26;
     gui::PipeResponse parsed_response;
     check(!gui::deserialize(gui::serialize(invalid_response),parsed_response),"reject undefined result");
+    gui::PipeResponse diagnostic;diagnostic.command=1010;diagnostic.assignment=3;diagnostic.result=24;diagnostic.active=7;
+    check(gui::deserialize(gui::serialize(diagnostic),parsed_response)&&parsed_response.active==7,"manual failure progress roundtrip");
+    diagnostic.active=9;check(!gui::deserialize(gui::serialize(diagnostic),parsed_response),"reject invalid progress");
+    diagnostic.active=0;diagnostic.assignment=109;
+    check(!gui::deserialize(gui::serialize(diagnostic),parsed_response),"reject undefined manual state");
     gui::Frame frame;
     frame.payload.rdr_count=frame.payload.fcs_count=1;
     frame.payload.rdr.azimuth=150.3f;frame.payload.rdr.elevation=12.3f;
@@ -141,6 +146,17 @@ int gui_v3_entry() {
     check(std::abs(fcs_motor_to_gui_azimuth(180.2)-135.2f)<.001,"preserve fractional FCS angle");
     check(fcs_point_angles(1,1,0).azimuth==225 && fcs_point_angles(-1,1,0).azimuth==135 &&
         fcs_point_angles(0,1,0).azimuth==180,"right target increases PAN; left target decreases PAN");
+    check(fcs_pan_error(359.9,.1)<.201 && fcs_pan_error(0,360)==0,
+        "PAN alignment uses circular distance across zero");
+    const auto offset_angles=fcs_point_angles(1,1,0,2.5,-3.5);
+    check(offset_angles.azimuth==227.5 && offset_angles.elevation==-3.5,
+        "independent PAN/TILT offsets added exactly once");
+    check(fcs_point_angles(1,1,0,180,0).azimuth==45 &&
+        fcs_point_angles(-1,1,0,-180,0).azimuth==315,
+        "calibrated PAN wraps in both directions");
+    const auto far_angles=fcs_point_angles(10,10,0,2.5,-3.5);
+    check(far_angles.azimuth==offset_angles.azimuth && far_angles.elevation==offset_angles.elevation,
+        "angular calibration is independent of target distance");
     const auto live_angles=fcs_point_angles(.458599,1.890695,-.225648);
     check(live_angles.azimuth==193.6 && live_angles.elevation==-6.6,
         "reported target right of FCS commands right-positive PAN 193.6");

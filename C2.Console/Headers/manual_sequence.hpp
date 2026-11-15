@@ -2,6 +2,7 @@
 #include "protocol.hpp"
 #include "c2/rdr_session.hpp"
 #include "c2/fcs_client.hpp"
+#include "fcs_angles.hpp"
 #include <chrono>
 #include <cmath>
 
@@ -19,6 +20,7 @@ public:
     Result reason{Result::success};
     bool output_seen{}, recovery_requested{}, result_started{};
     Clock::time_point began{},paused_at{};
+    unsigned failed_step{};
     bool active() const {return phase!=Phase::none;}
     bool terminal() const {return phase==Phase::hit||phase==Phase::alive||phase==Phase::failed;}
     unsigned state() const {
@@ -37,14 +39,21 @@ public:
         }
     }
     void enter(Phase next,Clock::time_point now) {phase=next;began=now;reason=Result::success;}
-    void fail(Result why) {phase=Phase::failed;reason=why;}
+    unsigned completed_step() const {
+        if(phase==Phase::failed)return failed_step;
+        if(phase==Phase::aiming)return 2;
+        if(phase==Phase::alive)return 8;
+        const auto value=state();
+        return value>=102&&value<=108?value-100:0;
+    }
+    void fail(Result why) {if(phase!=Phase::failed)failed_step=completed_step();phase=Phase::failed;reason=why;}
     static bool stopped(const c2::rdr::State& r) {
         return r.connected&&r.lidar_supported&&r.lidar_known&&!r.lidar_on&&
             r.lidar_inhibited&&r.lidar_request==0&&r.lidar_result==0;
     }
     static bool resumed(const c2::rdr::State& r) {
-        return r.connected&&r.mode==2&&r.reporting&&r.lidar_supported&&r.lidar_known&&
-            r.lidar_on&&!r.lidar_inhibited&&r.lidar_request==1&&r.lidar_result==0;
+        return r.connected&&r.mode==2&&r.reporting&&r.lidar_supported&&
+            !r.lidar_inhibited&&r.lidar_request==1&&r.lidar_result==0;
     }
     void tick(const c2::rdr::State& r,const c2::fcs::Snapshot& f,bool same_target,
               Clock::time_point now,double sample_now) {
@@ -57,7 +66,7 @@ public:
         const auto flags=f.status->flags;
         if(!(flags&1)||(flags&16)){fail(Result::device_fault);return;}
         const bool fresh=f.status_received_at>began;
-        const bool aligned=std::abs(f.status->azimuth-pan)<=1&&std::abs(f.status->elevation-tilt)<=1;
+        const bool aligned=fcs_pan_error(f.status->azimuth,pan)<=1&&std::abs(f.status->elevation-tilt)<=1;
         if(phase==Phase::aiming) {
             if(!same_target){fail(Result::target_changed);return;}
             if(now-began>std::chrono::seconds(60)){fail(Result::alignment_required);return;}
@@ -76,6 +85,10 @@ public:
             if(fresh&&(flags&12))output_seen=true;
             if(fresh&&output_seen&&!(flags&14))enter(Phase::fired,now);
             else if(now-began>std::chrono::seconds(8))fail(Result::fcs_off_unconfirmed);
+        } else if(phase==Phase::fired) {
+            // Operator-paced wait after confirmed completion; no pause deadline.
+            if(!stopped(r)){fail(Result::lidar_stop_unconfirmed);return;}
+            if(flags&14){fail(Result::fcs_off_unconfirmed);return;}
         } else if(phase==Phase::resuming) {
             if(flags&14){fail(Result::fcs_off_unconfirmed);return;}
             if(r.lidar_result>1||now-began>=std::chrono::duration<double>(c2::rdr::lidar_command_timeout_seconds)){
@@ -89,9 +102,9 @@ public:
                it->second.track_state==1&&it->second.detected==1){enter(Phase::alive,now);return;}
             // A packet gap, LOST, or a changed ID is NOT evidence of a hit.
             // No hit is synthesized without an independently confirmed result.
-            if(now-began>=std::chrono::seconds(3))fail(Result::device_error);
+            if(now-began>=std::chrono::seconds(3))fail(Result::result_unconfirmed);
         }
-        if((phase==Phase::pausing||phase==Phase::paused||phase==Phase::firing||phase==Phase::fired)&&
-           now-paused_at>=std::chrono::seconds(10))fail(Result::lidar_recovery_required);
+        if((phase==Phase::pausing||phase==Phase::paused||phase==Phase::firing)&&
+           now-paused_at>=std::chrono::seconds(10))fail(Result::pause_timeout);
     }
 };

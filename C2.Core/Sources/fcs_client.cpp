@@ -1,4 +1,5 @@
 #include "c2/fcs_client.hpp"
+#include "c2/diagnostic_log.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -44,10 +45,15 @@ std::optional<Packet> Client::exchange(Packet request) {
     pending_ = request;
     response_.reset();
     response_deadline_ = std::chrono::steady_clock::now() + config_.response_timeout;
+    const auto began=std::chrono::steady_clock::now();
+    diagnostic("FCS","request",{{"message_id",unsigned(request.id)},{"tx_seq",request.sequence},
+        {"timeout_ms",config_.response_timeout.count()},{"elevation_raw",request.elevation},
+        {"azimuth_raw",request.azimuth},{"laser_state",request.laser_state}});
     try {
         // Receive callback may run immediately; pending is installed before send.
         transport_.send(encode(request), config_.peer);
     } catch (...) {
+        diagnostic("FCS","send_failed",{{"message_id",unsigned(request.id)},{"tx_seq",request.sequence}});
         pending_.reset();
         if (request.id == MessageId::connect) state_.connected = false;
         else if (request.id == MessageId::status &&
@@ -77,15 +83,32 @@ std::optional<Packet> Client::exchange(Packet request) {
             state_.connected = false;
         }
     }
+    diagnostic("FCS",reply?"exchange_complete":"exchange_timeout",{
+        {"message_id",unsigned(request.id)},{"tx_seq",request.sequence},
+        {"elapsed_us",std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-began).count()},
+        {"connected",state_.connected},{"missed_status",state_.missed_status}});
     return reply;
 }
 void Client::receive(std::vector<std::byte> bytes, const Endpoint& source) {
-    if (source.address != config_.peer.address || source.port != config_.peer.port) return;
+    if (source.address != config_.peer.address || source.port != config_.peer.port) {
+        diagnostic("FCS","rx_rejected",{{"reason","unexpected_peer"},{"ip",source.address},{"port",source.port}});return;
+    }
     Packet packet;
-    try { packet = decode(bytes); } catch (const std::invalid_argument&) { return; }
+    try { packet = decode(bytes); } catch (const std::invalid_argument& e) {
+        diagnostic("FCS","rx_rejected",{{"reason",e.what()}});return;
+    }
     std::lock_guard lock(mutex_);
-    if (stopped_ || !pending_ || response_ || std::chrono::steady_clock::now() >= response_deadline_ ||
-        packet.id != response_id(pending_->id) || packet.reply_to != pending_->sequence) return;
+    const char* rejection=stopped_?"stopped":!pending_?"no_pending_request":response_?"duplicate_response":
+        std::chrono::steady_clock::now()>=response_deadline_?"late_response":
+        packet.id!=response_id(pending_->id)?"message_mismatch":
+        packet.reply_to!=pending_->sequence?"sequence_mismatch":nullptr;
+    if(rejection){diagnostic("FCS","rx_rejected",{{"reason",rejection},{"message_id",unsigned(packet.id)},
+        {"tx_seq",packet.sequence},{"reply_to",packet.reply_to},
+        {"expected_reply_to",pending_?pending_->sequence:0}});return;}
+    diagnostic("FCS","rx_accepted",{{"message_id",unsigned(packet.id)},
+        {"tx_seq",packet.sequence},{"reply_to",packet.reply_to},{"result",unsigned(packet.result)},
+        {"flags",packet.flags},{"elevation_raw",packet.elevation},{"azimuth_raw",packet.azimuth},
+        {"laser_state",packet.laser_state}});
     response_ = packet;
     received_.notify_one();
 }

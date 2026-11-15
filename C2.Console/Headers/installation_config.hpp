@@ -18,8 +18,8 @@
 // PAN/TILT by sensor_to_base; translate that result, then subtract FCS position.
 struct InstallationConfig {
     std::array<double, 3> rdr_position{}, eff_position{};
-    // Camera-only metadata, in GUI XYZ metres; never used by device control.
-    std::array<double, 3> rdr_zero{}, fcs_zero{};
+    // Additive motor command angles: PAN, TILT, reserved (zero), in degrees.
+    std::array<double, 3> fcs_angle_offset_deg{};
     std::array<double, 3> ranges{1.5, 10.0, 3.0};
     std::array<double, 3> rdr_fov{120.0, 45.0, 0.0};
     std::string observer_id{"RDR-1"}, effector_id{"FCS-1"};
@@ -76,7 +76,10 @@ inline std::array<double, 3> camera_triple(const nlohmann::json& value) {
     return result;
 }
 inline void validate_camera_settings(const InstallationConfig& value) {
-    (void)camera_triple(value.rdr_zero); (void)camera_triple(value.fcs_zero);
+    (void)camera_triple(value.fcs_angle_offset_deg);
+    if (std::abs(value.fcs_angle_offset_deg[0])>180 ||
+        std::abs(value.fcs_angle_offset_deg[1])>90 || value.fcs_angle_offset_deg[2]!=0)
+        throw std::invalid_argument("FCS angle offsets: PAN [-180,180], TILT [-90,90], reserved 0");
     (void)camera_triple(value.ranges);
     (void)camera_triple(value.rdr_fov);
     if (value.rdr_fov[0]<=0 || value.rdr_fov[0]>360 || value.rdr_fov[1]<=0 || value.rdr_fov[1]>180 || value.rdr_fov[2]!=0)
@@ -112,8 +115,7 @@ inline InstallationConfig parse_installation_config(const nlohmann::json& config
     if (config.contains("camera")) {
         const auto& camera=config.at("camera");
         if (!camera.is_object()) throw std::invalid_argument("camera must be an object");
-        if (camera.contains("rdr_zero")) result.rdr_zero=camera_triple(camera.at("rdr_zero"));
-        if (camera.contains("fcs_zero")) result.fcs_zero=camera_triple(camera.at("fcs_zero"));
+        if (camera.contains("fcs_angle_offset_deg")) result.fcs_angle_offset_deg=camera_triple(camera.at("fcs_angle_offset_deg"));
         if (camera.contains("ranges")) result.ranges=camera_triple(camera.at("ranges"));
         result.rdr_fov=camera_triple(nlohmann::json::array({
             camera.value("rdr_horizontal_fov_deg", nlohmann::json(120.0)),
@@ -167,8 +169,9 @@ inline void save_installation_settings(const std::filesystem::path& path,
     devices[value.effector_id]["role"] = "EFF";
     devices[value.effector_id]["position"] = value.eff_position;
     validate_camera_settings(value);
-    settings["camera"]["rdr_zero"]=value.rdr_zero;
-    settings["camera"]["fcs_zero"]=value.fcs_zero;
+    settings["camera"]["fcs_angle_offset_deg"]=value.fcs_angle_offset_deg;
+    settings["camera"].erase("rdr_zero"); // Remove retired keys when saving older files.
+    settings["camera"].erase("fcs_zero");
     settings["camera"]["ranges"]=value.ranges;
     settings["camera"]["rdr_horizontal_fov_deg"]=value.rdr_fov[0];
     settings["camera"]["rdr_vertical_fov_deg"]=value.rdr_fov[1];

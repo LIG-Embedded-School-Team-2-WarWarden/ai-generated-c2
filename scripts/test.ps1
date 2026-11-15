@@ -5,6 +5,8 @@ Push-Location $root
 try {
     & "./x64/$Configuration/C2.Tests.exe"
     if($LASTEXITCODE){throw 'Binary ICD unit tests failed.'}
+    python ./C2.Tests/Integration/test_device_diagnostics.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw 'Device diagnostics scenarios failed.'}
     python ./C2.Tests/Integration/test_manual_sequence.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Manual GUI sequence scenarios failed.'}
     python ./C2.Tests/Integration/test_retention_regressions.py --console "./x64/$Configuration/C2.Console.exe"
@@ -13,6 +15,8 @@ try {
     if($LASTEXITCODE){throw 'Observation retention scenarios failed.'}
     python ./C2.Tests/Integration/test_lidar_interlock.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Lidar optical interlock scenarios failed.'}
+    python ./C2.Tests/Integration/test_angle_calibration.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw 'Independent PAN/TILT calibration scenarios failed.'}
     python ./C2.Tests/Integration/test_camera_settings.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Camera settings persistence scenarios failed.'}
     python ./C2.Tests/Integration/test_installation_persistence.py --console "./x64/$Configuration/C2.Console.exe"
