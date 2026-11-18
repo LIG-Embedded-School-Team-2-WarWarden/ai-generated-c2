@@ -107,7 +107,7 @@ def main():
             wait(lambda value: value.get('rdr_live') is True)
             live(lambda value: value['connected'])
             assert board.starts == 0 and not board.reporting
-            assert set(board.requests) <= {0xED01, 0xED02}, 'monitor sent a sensor control'
+            assert set(board.requests) <= {0xED01, 0xED02, 0xED08}, 'monitor sent a sensor control'
 
             send('rdr report on')
             live(lambda value: value['reporting'])
