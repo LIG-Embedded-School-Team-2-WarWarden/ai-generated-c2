@@ -14,7 +14,7 @@ public:
     using Clock=std::chrono::steady_clock;
     using Result=c2::ipc::Result;
     static constexpr auto capture_completion_timeout=std::chrono::seconds(30);
-    enum class Phase { none, registered, aiming, aimed, pausing, paused, firing,
+    enum class Phase { none, registered, aiming, aimed, pausing, paused, firing, stopping_capture,
                        fired, resuming, observing, hit, alive, failed };
     Phase phase{Phase::none};
     uint32_t target{}; uint64_t generation{};
@@ -42,6 +42,7 @@ public:
         case Phase::aimed:case Phase::pausing:return 103;
         case Phase::paused:return 104;
         case Phase::firing:return 105;
+        case Phase::stopping_capture:return 112;
         case Phase::fired:case Phase::resuming:return 106;
         case Phase::observing:return 107;
         case Phase::hit:return 108;
@@ -57,6 +58,7 @@ public:
     unsigned completed_step() const {
         if(phase==Phase::failed)return failed_step;
         if(phase==Phase::aiming)return 2;
+        if(phase==Phase::stopping_capture)return 5;
         if(phase==Phase::alive)return 8;
         const auto value=state();
         return value>=102&&value<=108?value-100:0;
@@ -103,10 +105,11 @@ public:
         } else if(phase==Phase::paused) {
             // Wait for an explicit operator request without a time limit.
             if(!stopped(r)||!aligned||(flags&14))fail(Result::lidar_stop_unconfirmed);
-        } else if(phase==Phase::firing) {
+        } else if(phase==Phase::firing||phase==Phase::stopping_capture) {
             if(!stopped(r)){fail(r.thermal_warning()?Result::lidar_stop_warning_unconfirmed:Result::lidar_stop_unconfirmed);return;}
             if(fresh&&(flags&12))output_seen=true;
-            if(fresh&&output_seen&&!(flags&14))enter(Phase::fired,now);
+            // After OFF acceptance, require a newer report with both motion and output clear.
+            if(fresh&&(output_seen||phase==Phase::stopping_capture)&&!(flags&14))enter(Phase::fired,now);
             else if(now-began>=capture_completion_timeout)fail(Result::fcs_off_unconfirmed);
         } else if(phase==Phase::fired) {
             // Operator-paced wait after confirmed completion; no pause deadline.

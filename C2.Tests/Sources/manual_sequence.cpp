@@ -40,6 +40,24 @@ int manual_sequence_entry() {
         completed.tick(r,busy,true,busy.status_received_at,30);
         check(completed.phase==P::fired);
     }
+    { // The OFF reply alone is insufficient, even when capture was brief.
+        M capture;capture.target=7;capture.generation=1;capture.enter(P::stopping_capture,start);
+        c2::fcs::Snapshot report;report.connected=true;report.status=c2::fcs::Status{1,0,0};
+        report.status_received_at=start;
+        capture.tick(r,report,true,start,0);
+        check(capture.state()==112&&capture.completed_step()==5);
+        report.status->flags=11;
+        report.status_received_at=start+std::chrono::seconds(1);
+        capture.tick(r,report,true,report.status_received_at,1);
+        check(capture.phase==P::stopping_capture);
+        auto delayed=capture;
+        report.status_received_at=start+M::capture_completion_timeout;
+        delayed.tick(r,report,true,report.status_received_at,30);
+        check(delayed.phase==P::failed&&delayed.reason==R::fcs_off_unconfirmed&&delayed.completed_step()==5);
+        report.status->flags=1;
+        capture.tick(r,report,true,report.status_received_at,30);
+        check(capture.phase==P::fired&&capture.target==7);
+    }
     c2::fcs::Snapshot f;f.connected=true;f.status=c2::fcs::Status{1,0,0};f.status_received_at=later;
     M m;m.target=7;m.generation=1;m.paused_at=start;m.enter(P::fired,start);
     m.tick(r,f,false,later,3600);check(m.phase==P::fired&&m.completed_step()==6);

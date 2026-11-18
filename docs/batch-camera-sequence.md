@@ -19,6 +19,7 @@ Named Pipe v3 요청/응답 40바이트와 SharedMemory v3 492바이트를 유�
 | 1205 FireBatchTarget | 선택된 객체에 기존 EF05 촬영 요청. 105 → 최신 FE02 동작 관측 및 종료 확인 후 106 |
 | 1206 ResumeBatchScan | FCS 동작 종료 확인 후 ED07=1을 한 번 요청. 촬영 완료 행들은 재개 확인 후 107로 전환해 각각 결과 관측 |
 | 1207 RetryBatchTarget | 111 상태에서 같은 ID의 최신 관측을 확인하고 102로 재등록 |
+| 1208 StopBatchCapture | 진행 중인 행의 할당을 보존하고 기존 EF04 OFF로 남은 각도 스캔을 중단. 112 → 최신 FE02에서 출력 OFF 및 복귀 완료가 확인되면 106 |
 
 응답 `assignedTargetId`는 조회/요청한 ID다. `assignmentState`는 그 행의 상태이며,
 `fireState`(ECS 내부 `active`)는 모든 행에 공통인 다음 비트다.

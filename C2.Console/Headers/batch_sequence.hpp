@@ -27,6 +27,7 @@ public:
     struct Actions {
         std::function<Result()> stop, resume, capture, off;
         std::function<Result(double,double)> point; // tilt, pan
+        std::function<Clock::time_point()> clock=Clock::now;
     };
     bool active() const { return !rows_.empty(); }
     Phase phase() const { return phase_; }
@@ -120,7 +121,7 @@ public:
         if(command==1202) {
             if(it==rows_.end())return Result::success; // repeated cancellation
             const auto p=it->second.sequence.phase;
-            if(p==P::aiming||p==P::firing||p==P::resuming||p==P::observing||phase_==Phase::stopping||phase_==Phase::resuming)
+            if(p==P::aiming||p==P::firing||p==P::stopping_capture||p==P::resuming||p==P::observing||phase_==Phase::stopping||phase_==Phase::resuming)
                 return Result::status_pending;
             // Removing a waiting/completed row must not interrupt another capture.
             if(current_==id||rows_.size()==1||phase_==Phase::fault) {
@@ -172,7 +173,7 @@ public:
             return perform([&]{return actions.point(s.tilt,s.pan);},Result::device_error);
         }
         if(command==1205) {
-            if(s.phase==P::firing||s.phase==P::fired)return Result::success;
+            if(s.phase==P::firing||s.phase==P::stopping_capture||s.phase==P::fired)return Result::success;
             if(current_!=id||s.phase!=P::paused||phase_!=Phase::paused)return Result::invalid_request;
             if(!ManualSequence::stopped(c.rdr))return stop_error(c);
             if(c.fcs.status->flags&14)return Result::device_busy;
@@ -181,12 +182,18 @@ public:
             s.output_seen=false;s.enter(P::firing,c.now);
             return perform(actions.capture,Result::device_error);
         }
+        if(command==uint32_t(c2::ipc::Command::stop_batch_capture)) {
+            if(s.phase==P::stopping_capture||s.phase==P::fired)return Result::success;
+            if(current_!=id||s.phase!=P::firing||phase_!=Phase::paused)return Result::invalid_request;
+            const auto result=perform(actions.off,Result::fcs_off_unconfirmed);
+            if(result==Result::success)s.enter(P::stopping_capture,actions.clock());
+            return result;
+        }
         if(command==1206) {
             if(phase_==Phase::resuming||phase_==Phase::observing)return Result::success;
             if(phase_==Phase::idle&&(s.phase==P::alive||s.phase==P::hit))return Result::success;
             if(phase_!=Phase::paused)return Result::invalid_request;
             if(!(flags(c)&2))return Result::status_pending;
-            if(current_&&rows_.at(current_).sequence.phase==P::firing)return Result::status_pending;
             for(auto& [key,item]:rows_) {
                 if(item.sequence.phase==P::fired)item.sequence.enter(P::resuming,c.now);
                 else if(item.sequence.phase==P::aiming||item.sequence.phase==P::paused)
