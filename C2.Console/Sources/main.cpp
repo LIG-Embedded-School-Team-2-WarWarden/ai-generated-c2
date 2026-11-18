@@ -775,6 +775,8 @@ int main(int argc, char** argv) {
                 }
                 gui::PipeResponse response;
                 response.request_id = request.request_id; response.command = request.command; response.fcs_id=1;
+                const bool stop_manual_capture=request.command==uint32_t(gui::Command::stop_manual_capture);
+                const bool manual_command=(request.command>=1001&&request.command<=1009)||stop_manual_capture;
                 if(gui::is_batch_command(request.command)) {
                     auto result=gui::Result::invalid_request;
                     if(request.request_id&&request_ipc==ipc&&request.rdr_id==1&&request.fcs_id==1) {
@@ -855,7 +857,7 @@ int main(int argc, char** argv) {
                     if (!request.request_id) result=gui::Result::invalid_request;
                     else if(batch.active()&&(request.command==1||request.command==2||request.command==3||
                         request.command==5||request.command==6||request.command==9||
-                        (request.command>=1001&&request.command<=1009)))result=gui::Result::device_busy;
+                        manual_command))result=gui::Result::device_busy;
                     else if(request.command>=1110 && request.command<=1114) {
                         if(request_ipc!=ipc || request.rdr_id!=1 || request.fcs_id!=1 || !request.target_id)
                             result=gui::Result::invalid_request;
@@ -925,7 +927,7 @@ int main(int argc, char** argv) {
                                 found->north-installation.eff_position[0],found->up-installation.eff_position[2]);
                         }
                     }
-                    else if(request.command>=1001&&request.command<=1009) {
+                    else if(manual_command) {
                         using P=ManualSequence::Phase;
                         const auto now=Clock::now();
                         if(request_ipc!=ipc||request.rdr_id!=1||request.fcs_id!=1||!request.target_id||request.target_id>65535)
@@ -988,7 +990,7 @@ int main(int argc, char** argv) {
                                 if(real_rdr->command(0xED07,0)>1){manual.fail(gui::Result::lidar_stop_unconfirmed);result=manual.reason;}
                             }
                         } else if(request.command==1005) {
-                            if(manual.phase==P::firing||manual.phase==P::fired){}
+                            if(manual.phase==P::firing||manual.phase==P::stopping_capture||manual.phase==P::fired){}
                             else if(manual.phase!=P::paused)result=gui::Result::invalid_request;
                             else if(!ManualSequence::stopped(real_rdr->snapshot())||!aligned||(flags&14))result=gui::Result::lidar_stop_unconfirmed;
                             else {
@@ -996,6 +998,22 @@ int main(int argc, char** argv) {
                                 manual.enter(P::firing,Clock::now());manual.output_seen=false;
                                 const auto reply=client->demo();result=command_result("EF05_MANUAL",reply);
                                 if(result!=gui::Result::success)manual.fail(result);
+                                next_poll={};
+                            }
+                        } else if(stop_manual_capture) {
+                            if(manual.phase==P::stopping_capture||manual.phase==P::fired){}
+                            else if(manual.phase!=P::firing)result=gui::Result::invalid_request;
+                            else {
+                                try {
+                                    const auto reply=laser_off();
+                                    result=command_result("EF04_STOP_CAPTURE_MANUAL",reply);
+                                    if(result==gui::Result::success&&reply->laser_state!=0)
+                                        result=gui::Result::fcs_off_unconfirmed;
+                                } catch(const std::exception& error) {
+                                    log(error.what());result=gui::Result::fcs_off_unconfirmed;
+                                }
+                                if(result==gui::Result::success)manual.enter(P::stopping_capture,Clock::now());
+                                else manual.fail(result);
                                 next_poll={};
                             }
                         } else if(request.command==1007) {

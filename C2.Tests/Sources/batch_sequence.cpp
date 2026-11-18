@@ -35,6 +35,7 @@ struct Fixture {
         actions.resume=[&]{++resumes;r.lidar_request=1;r.lidar_result=1;return action_result;};
         actions.capture=[&]{++captures;return action_result;};
         actions.off=[&]{++offs;return action_result;};
+        actions.clock=[&]{return now;};
         actions.point=[&](double tilt,double pan){++moves;f.status->azimuth=pan;f.status->elevation=tilt;return action_result;};
     }
     B::Context context() {
@@ -72,11 +73,11 @@ struct Fixture {
 }
 int batch_sequence_entry() {
     { // GUI's literal 40-byte request/response contract, including all flag bits.
-        for(unsigned code=1200;code<=1207;++code) {
+        for(unsigned code=1200;code<=1208;++code) {
             c2::ipc::PipeCommand q;q.command=code;q.request_id=12;q.rdr_id=q.fcs_id=1;q.target_id=7;
             c2::ipc::PipeCommand parsed;
             check(c2::ipc::deserialize(c2::ipc::serialize(q),parsed)&&parsed.command==code&&parsed.target_id==7);
-            c2::ipc::PipeResponse p;p.command=code;p.request_id=12;p.target_id=7;p.assignment=104;p.active=15;
+            c2::ipc::PipeResponse p;p.command=code;p.request_id=12;p.target_id=7;p.assignment=112;p.active=15;
             c2::ipc::PipeResponse decoded;
             const auto bytes=c2::ipc::serialize(p);
             check(bytes.size()==40&&bytes[12]==(code&255)&&bytes[32]==15);
@@ -187,6 +188,21 @@ int batch_sequence_entry() {
         x.f.status->flags=1;x.advance();check(x.batch.state(7)==104);
         x.resume();check(x.batch.state(7)==102&&x.batch.state(8)==102&&x.batch.phase()==B::Phase::idle);
         check(x.send(1203)==R::invalid_request);check(x.send(1204)==R::target_pending);
+    }
+    { // Early stop preserves the row and holds FCS until the return is confirmed.
+        Fixture x;check(x.send(1201)==R::success);check(x.send(1201,8)==R::success);
+        x.pause();check(x.send(1203)==R::success);x.advance();check(x.send(1205)==R::success);
+        check(x.send(1208,8)==R::invalid_request&&x.offs==0);
+        check(x.send(1208)==R::success&&x.batch.state(7)==112&&x.offs==1);
+        check(x.send(1208)==R::success&&x.offs==1);
+        x.batch.tick(x.context());check(x.batch.state(7)==112); // stale idle status
+        x.f.status->flags=11;x.advance();check(x.batch.state(7)==112); // returning with light off
+        check(x.send(1202)==R::status_pending);
+        check(x.send(1206)==R::status_pending&&x.resumes==0);
+        check(x.send(1203,8)==R::device_busy);
+        x.f.status->flags=1;x.advance();
+        check(x.batch.state(7)==106&&x.batch.state(8)==102&&x.batch.rows().size()==2);
+        check(x.send(1208)==R::success&&x.offs==1&&x.resumes==0);
     }
     { // Confirmed capture is required; an ACK and idle FE02 are not completion.
         Fixture x;check(x.send(1201)==R::success);x.pause();
