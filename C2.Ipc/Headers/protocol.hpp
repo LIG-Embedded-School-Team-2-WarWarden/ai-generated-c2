@@ -39,8 +39,14 @@ enum class Command : std::uint32_t {
     confirm_manual_fire=1006, resume_manual_scan=1007,
     confirm_manual_result=1008, retry_manual_assignment=1009,
     // Read-only: result=reason, assignment=current state, active=completed step.
-    get_manual_status=1010
+    get_manual_status=1010,
+    // Per-object camera batch. active is a shared bitmask: paused=1,
+    // resume available=2, positioning slot free=4, FCS ready=8.
+    get_batch_status=1200, register_batch_target=1201, cancel_batch_target=1202,
+    aim_batch_target=1203, pause_batch_scan=1204, fire_batch_target=1205,
+    resume_batch_scan=1206, retry_batch_target=1207
 };
+constexpr bool is_batch_command(std::uint32_t command) { return command>=1200 && command<=1207; }
 enum class Result : std::uint32_t {
     success, invalid_request, asset_unavailable, not_assigned,
     already_assigned, not_supported, device_error,

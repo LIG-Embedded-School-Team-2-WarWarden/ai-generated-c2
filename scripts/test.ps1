@@ -5,6 +5,8 @@ Push-Location $root
 try {
     & "./x64/$Configuration/C2.Tests.exe"
     if($LASTEXITCODE){throw 'Binary ICD unit tests failed.'}
+    python ./C2.Tests/Integration/test_batch_disconnected.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw 'Batch camera IPC routing checks failed.'}
     python ./C2.Tests/Integration/test_device_diagnostics.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Device diagnostics scenarios failed.'}
     python ./C2.Tests/Integration/test_thermal_policy.py --console "./x64/$Configuration/C2.Console.exe"

@@ -64,7 +64,7 @@ def run(exe, thermal):
             send(2)
             # New warning failure is attributable without pretending the sensor caused the timeout.
             send(1001);send(1003);wait_for(lambda:state()==103)
-            board.drop_stop=True;send(1004);wait_for(lambda:state()==3,9)
+            board.drop_stop=True;send(1004);wait_for(lambda:state()==3,70)
             gui.command(1010);assert gui.last_response[4]==27,gui.last_response
             board.drop_stop=False;send(2)
             # A latched RDR protection stops work even after the current sensor state cools.

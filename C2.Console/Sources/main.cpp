@@ -5,6 +5,7 @@
 #include "rdr_control.hpp"
 #include "lidar_interlock.hpp"
 #include "manual_sequence.hpp"
+#include "batch_sequence.hpp"
 #include "observation_retention.hpp"
 #include "rdr_startup.hpp"
 #include "rdr_live_diagnostics.hpp"
@@ -350,8 +351,10 @@ int main(int argc, char** argv) {
         AssignmentHealth health; auto& assignment=health.state;
         LidarInterlock lidar_interlock;
         ManualSequence manual;
+        BatchSequence batch;
         RdrStartup rdr_startup;
         c2::rdr::ObservationRetention observation_retention;
+        c2::rdr::HitRetention hit_retention;
         auto laser_off=[&]() {
             // Keep retrying even when an explicit CLI/GUI OFF fails or throws.
             laser_deadline=Clock::now()+std::chrono::seconds(1);
@@ -420,6 +423,7 @@ int main(int argc, char** argv) {
             position_filter_config.measurement_stddev_xyz_m,position_filter_config.measurement_stddev_m));
         bool demo_requested{}, demo_seen{};
         auto invalidate_installation_alignment=[&]() {
+            batch.fail(gui::Result::target_changed);
             if (!target_id) return;
             if(manual.active())manual.fail(gui::Result::target_changed);
             health.fail(gui::Result::target_changed);
@@ -470,7 +474,7 @@ int main(int argc, char** argv) {
                         else if(command=="point")expected=4;
                         else if(command=="laser")expected=3;
                     }
-                    if(manual.active()&&((device=="fcs"&&command=="point")||
+                    if((manual.active()||batch.active())&&((device=="fcs"&&command=="point")||
                         (device=="fcs"&&command=="laser"&&words.back()=="on")||
                         (device=="rdr"&&command!="status"&&command!="targets"&&command!="live")))
                         throw std::invalid_argument("Manual sequence owns devices; cancel it before independent control");
@@ -486,6 +490,7 @@ int main(int argc, char** argv) {
                            !f.connected||!f.status||Clock::now()-f.status_received_at>std::chrono::seconds(2)||
                            (f.status->flags&30))throw std::invalid_argument("Manual result confirmation unavailable");
                         manual.enter(ManualSequence::Phase::hit,Clock::now());
+                        hit_retention.confirm(uint16_t(manual.target));
                         log("MANUAL operator_confirmed_hit target="+std::to_string(id)+" source=console_visual_confirmation");
                         std::cout<<nlohmann::json{{"manual_result","hit"},{"target",id},{"source","operator"}}.dump()<<std::endl;
                     } else if(device=="rdr" && command=="live") {
@@ -521,7 +526,7 @@ int main(int argc, char** argv) {
                                 if(!prepare_output())throw std::runtime_error("LIDAR stop not confirmed; output blocked (use fcs laser off to recover)");
                                 laser_deadline=Clock::now()+std::chrono::seconds(1);
                                 response=client->laser(true);
-                            } else {response=laser_off();if(manual.active())manual.fail(gui::Result::device_error);}
+                            } else {response=laser_off();if(manual.active())manual.fail(gui::Result::device_error);batch.fail(gui::Result::device_error);}
                         }
                         else throw std::invalid_argument("unknown FCS command");
                         auto snapshot=client->snapshot();
@@ -597,7 +602,7 @@ int main(int argc, char** argv) {
                     else if(rdr_startup.phase==RdrStartup::Phase::failed)lidar_interlock.fail();
                 }
             }
-            if(client&&!manual.active()&&!rdr_startup.blocks_recovery()&&lidar_interlock.update(real_rdr->snapshot(),state,Clock::now())) {
+            if(client&&!manual.active()&&!batch.active()&&!rdr_startup.blocks_recovery()&&lidar_interlock.update(real_rdr->snapshot(),state,Clock::now())) {
                 try {
                     const auto result=real_rdr->command(0xED07,1);
                     log("LIDAR ED07 resume requested result="+std::to_string(result));
@@ -629,6 +634,10 @@ int main(int argc, char** argv) {
             // GUI serialization never feeds coordinates back into control.
             if (!real_control->operating(rdr_state)) position_filter.reset();
             auto filtered_targets=position_filter.update(rdr_state,rdr_origin);
+            std::set<uint16_t> retained_assignments;
+            if(manual.active())retained_assignments.insert(uint16_t(manual.target));
+            for(const auto& [id,row]:batch.rows())retained_assignments.insert(uint16_t(id));
+            hit_retention.observe(filtered_targets,retained_assignments);
             auto display_targets=observation_retention.update(rdr_state,filtered_targets,rdr_origin,
                 c2::rdr::seconds(),lidar_interlock.phase()==LidarInterlock::Phase::idle,
                 manual.phase==ManualSequence::Phase::fired||manual.phase==ManualSequence::Phase::resuming||
@@ -667,14 +676,39 @@ int main(int argc, char** argv) {
                 const auto before=manual.phase;
                 manual.tick(rdr_state,state,target_consistent,Clock::now(),c2::rdr::seconds());
                 if(before!=manual.phase) {
+                    if(manual.phase==ManualSequence::Phase::hit)hit_retention.confirm(uint16_t(manual.target));
                     log("MANUAL target="+std::to_string(manual.target)+" state="+std::to_string(manual.state())+
                         " reason="+result_name(manual.reason));
                     if(manual.phase==ManualSequence::Phase::observing)lidar_interlock=LidarInterlock{};
                 }
-                if(manual.phase==ManualSequence::Phase::failed&&client&&!manual.recovery_requested) {
+                if(manual.phase==ManualSequence::Phase::failed&&manual.reason!=gui::Result::result_unconfirmed&&client&&!manual.recovery_requested) {
                     manual.recovery_requested=true;
                     log("MANUAL result unconfirmed; explicit cancellation required; requesting FCS OFF");
                     try{(void)laser_off();}catch(const std::exception& e){log(e.what());}
+                }
+            }
+            auto batch_context=[&]() {
+                return BatchSequence::Context{rdr_state,state,filtered_targets,installation,Clock::now(),
+                    c2::rdr::seconds(),observation.scanning,manual.active()||target_id||rdr_startup.blocks_recovery(),
+                    lidar_interlock.phase()==LidarInterlock::Phase::idle};
+            };
+            {
+                const auto before=batch.phase();
+                std::map<uint32_t,unsigned> previous;
+                for(const auto& [id,row]:batch.rows())previous[id]=row.sequence.state();
+                batch.tick(batch_context());
+                for(const auto& [id,row]:batch.rows())
+                    if(previous[id]!=108&&row.sequence.phase==ManualSequence::Phase::hit)hit_retention.confirm(uint16_t(id));
+                if(before==BatchSequence::Phase::resuming&&
+                   (batch.phase()==BatchSequence::Phase::observing||batch.phase()==BatchSequence::Phase::idle))
+                    lidar_interlock=LidarInterlock{};
+                for(const auto& [id,row]:batch.rows())if(previous[id]!=row.sequence.state())
+                    log("BATCH target="+std::to_string(id)+" state="+std::to_string(row.sequence.state())+
+                        " reason="+result_name(row.sequence.reason));
+                if(client&&batch.take_off_request()) {
+                    log("BATCH failed; explicit cancellation required; requesting FCS OFF");
+                    try{(void)laser_off();}catch(const std::exception& e){log(e.what());}
+                    next_poll={};
                 }
             }
             auto assignment_details=[&](uint32_t inspected_target) {
@@ -741,7 +775,44 @@ int main(int argc, char** argv) {
                 }
                 gui::PipeResponse response;
                 response.request_id = request.request_id; response.command = request.command; response.fcs_id=1;
-                if(request.command==uint32_t(gui::Command::get_rdr_sensor_health)) {
+                if(gui::is_batch_command(request.command)) {
+                    auto result=gui::Result::invalid_request;
+                    if(request.request_id&&request_ipc==ipc&&request.rdr_id==1&&request.fcs_id==1) {
+                        BatchSequence::Actions actions;
+                        actions.stop=[&]() {
+                            if(!lidar_interlock.begin(real_rdr->snapshot(),Clock::now()))return gui::Result::lidar_recovery_required;
+                            observation_retention.begin(rdr_state,filtered_targets,rdr_origin,c2::rdr::seconds());
+                            position_filter.reset();
+                            return real_rdr->command(0xED07,0)<=1?gui::Result::success:gui::Result::lidar_stop_unconfirmed;
+                        };
+                        actions.resume=[&]() {
+                            return real_rdr->command(0xED07,1)<=1?gui::Result::success:gui::Result::lidar_resume_unconfirmed;
+                        };
+                        actions.point=[&](double tilt,double pan) {
+                            next_poll={};return client?command_result("EF03_BATCH",client->point(tilt,pan)):gui::Result::asset_unavailable;
+                        };
+                        actions.capture=[&]() {
+                            next_poll={};return client?command_result("EF05_BATCH",client->demo()):gui::Result::asset_unavailable;
+                        };
+                        actions.off=[&]() {
+                            if(!client)return gui::Result::asset_unavailable;
+                            const auto reply=laser_off();next_poll={};last_assignment_cancel=Clock::now();
+                            const auto result=command_result("EF04_OFF_BATCH",reply);
+                            return result==gui::Result::success&&reply->laser_state!=0?gui::Result::fcs_off_unconfirmed:result;
+                        };
+                        try{result=batch.command(request.command,request.target_id,batch_context(),actions);}
+                        catch(const std::invalid_argument& error){result=gui::Result::invalid_request;log(error.what());}
+                        catch(const std::exception& error){result=gui::Result::device_error;log(error.what());}
+                    }
+                    response.result=uint32_t(result);response.target_id=request.target_id;
+                    response.assignment=batch.state(request.target_id);response.active=batch.flags(batch_context());
+                    response.connected=state.connected;
+                    c2_ipc_reply(request_ipc,&response,ticket);
+                    if(request.command!=1200)log("BATCH command="+std::to_string(request.command)+
+                        " request_id="+std::to_string(request.request_id)+" target="+std::to_string(request.target_id)+
+                        " state="+std::to_string(response.assignment)+" flags="+std::to_string(response.active)+
+                        " result="+result_name(result)+" reason="+result_name(batch.reason(request.target_id)));
+                } else if(request.command==uint32_t(gui::Command::get_rdr_sensor_health)) {
                     const auto h=real_rdr->snapshot();response.connected=h.connected;
                     response.target_id=255;
                     if(!request.request_id||request_ipc!=ipc||request.rdr_id!=1||request.target_id)
@@ -770,7 +841,7 @@ int main(int argc, char** argv) {
                     }
                     c2_ipc_reply(request_ipc,&response,ticket);
                 } else if (real_control && request.command>=10 && request.command<1000 && request.command!=18) {
-                    if(manual.active()&&request.command>=10&&request.command<=16) {
+                    if((manual.active()||batch.active())&&request.command>=10&&request.command<=16) {
                         response.result=uint32_t(gui::Result::device_busy);
                         response.target_id=manual.target;response.assignment=manual.state();response.connected=rdr_state.connected;
                     } else response=real_control->handle(request,c2::rdr::seconds());
@@ -782,6 +853,9 @@ int main(int argc, char** argv) {
                 bool geometry_enabled{};
                 try {
                     if (!request.request_id) result=gui::Result::invalid_request;
+                    else if(batch.active()&&(request.command==1||request.command==2||request.command==3||
+                        request.command==5||request.command==6||request.command==9||
+                        (request.command>=1001&&request.command<=1009)))result=gui::Result::device_busy;
                     else if(request.command>=1110 && request.command<=1114) {
                         if(request_ipc!=ipc || request.rdr_id!=1 || request.fcs_id!=1 || !request.target_id)
                             result=gui::Result::invalid_request;
@@ -792,7 +866,7 @@ int main(int argc, char** argv) {
                         else if(request.command==1111) {
                             geometry_values=geometry_snapshot.fcs_geometry.rotation;geometry_enabled=geometry_snapshot.fcs_geometry.enabled;
                         } else if(!same_geometry_basis(installation,geometry_snapshot))result=gui::Result::target_changed;
-                        else if(manual.active() || target_id || (flags&14) || lidar_interlock.phase()!=LidarInterlock::Phase::idle)
+                        else if(manual.active() || batch.active() || target_id || (flags&14) || lidar_interlock.phase()!=LidarInterlock::Phase::idle)
                             result=gui::Result::device_busy;
                         else if(!current || !ready)result=gui::Result::asset_unavailable;
                         else if(request.command==1112) {
@@ -826,7 +900,7 @@ int main(int argc, char** argv) {
                             result=gui::Result::invalid_request;
                         else if(!client || !current || !ready) result=gui::Result::asset_unavailable;
                         else if(state.status_received_at<=last_calibration_move) result=gui::Result::status_pending;
-                        else if(manual.active() || target_id || (flags&14) ||
+                        else if(manual.active() || batch.active() || target_id || (flags&14) ||
                             lidar_interlock.phase()!=LidarInterlock::Phase::idle)
                             result=gui::Result::device_busy;
                         else if(request.command==1100) {
@@ -916,8 +990,7 @@ int main(int argc, char** argv) {
                         } else if(request.command==1005) {
                             if(manual.phase==P::firing||manual.phase==P::fired){}
                             else if(manual.phase!=P::paused)result=gui::Result::invalid_request;
-                            else if(!ManualSequence::stopped(real_rdr->snapshot())||!aligned||(flags&14)||
-                                now-manual.paused_at>=std::chrono::seconds(10))result=gui::Result::lidar_stop_unconfirmed;
+                            else if(!ManualSequence::stopped(real_rdr->snapshot())||!aligned||(flags&14))result=gui::Result::lidar_stop_unconfirmed;
                             else {
                                 // Existing EF05 capture command; legacy demo() wire API is unchanged.
                                 manual.enter(P::firing,Clock::now());manual.output_seen=false;
@@ -1110,7 +1183,7 @@ int main(int argc, char** argv) {
                 if(original_gui && request_ipc==ipc) {
                     if(response.assignment==4) response.assignment=1;
                     if(request.command==0 && result!=gui::Result::invalid_request) response.result=0;
-                    else if(request.command!=18 && response.result>=7 && response.result<15) response.result=
+                    else if(request.command!=18 && !(request.command==1009 && result==gui::Result::target_pending) && response.result>=7 && response.result<15) response.result=
                         (result==gui::Result::response_timeout || result==gui::Result::device_rejected ||
                          result==gui::Result::device_fault)?6:2;
                 }
@@ -1163,7 +1236,7 @@ int main(int argc, char** argv) {
                     c2::rdr::seconds(),lidar_interlock.phase()==LidarInterlock::Phase::idle,
                     manual.phase==ManualSequence::Phase::fired||manual.phase==ManualSequence::Phase::resuming||
                     manual.phase==ManualSequence::Phase::observing);
-                real_control->populate(p,rdr_state,display_targets);
+                real_control->populate(p,rdr_state,hit_retention.merge(display_targets));
                 if (rdr_reply!=RdrReply::none) {
                     const auto reply=rdr_json(rdr_state,corrected_targets,filtered_targets);
                     std::cout<<(rdr_reply==RdrReply::targets?reply.at("targets"):reply).dump()<<std::endl;

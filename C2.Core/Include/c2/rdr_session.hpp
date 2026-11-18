@@ -14,7 +14,9 @@
 #include <vector>
 #include <algorithm>
 namespace c2::rdr {
-inline constexpr double lidar_command_timeout_seconds=6.0;
+// Installed RDR controller allows 60 s for ED07, including two 20 s
+// TILT moves and SDK work. Keep a transport margin beyond its final reply.
+inline constexpr double lidar_command_timeout_seconds=65.0;
 using Packet=std::array<uint8_t,24>;
 inline uint16_t word(std::span<const uint8_t> p,unsigned n){return uint16_t((unsigned(p[n])<<8)|p[n+1]);}
 inline void word(Packet&p,unsigned n,uint16_t v){p.at(n)=uint8_t(v>>8);p.at(n+1)=uint8_t(v);}

@@ -13,6 +13,7 @@ class ManualSequence {
 public:
     using Clock=std::chrono::steady_clock;
     using Result=c2::ipc::Result;
+    static constexpr auto capture_completion_timeout=std::chrono::seconds(30);
     enum class Phase { none, registered, aiming, aimed, pausing, paused, firing,
                        fired, resuming, observing, hit, alive, failed };
     Phase phase{Phase::none};
@@ -23,6 +24,15 @@ public:
     bool output_seen{}, recovery_requested{}, result_started{};
     Clock::time_point began{},paused_at{};
     unsigned failed_step{};
+    uint16_t observation_candidate{};
+    double candidate_seen{};
+    bool late_window_closed{};
+    // Preserve the original resume epoch even after publishing an uncertain result.
+    static constexpr auto late_observation_limit=std::chrono::seconds(13);
+    bool awaiting_observation() const {
+        return phase==Phase::observing||
+            (phase==Phase::failed&&reason==Result::result_unconfirmed&&result_started&&!late_window_closed);
+    }
     bool active() const {return phase!=Phase::none;}
     bool terminal() const {return phase==Phase::hit||phase==Phase::alive||phase==Phase::failed;}
     unsigned state() const {
@@ -40,7 +50,10 @@ public:
         default:return 0;
         }
     }
-    void enter(Phase next,Clock::time_point now) {phase=next;began=now;reason=Result::success;}
+    void enter(Phase next,Clock::time_point now) {
+        phase=next;began=now;reason=Result::success;
+        if(next==Phase::observing){observation_candidate=0;candidate_seen=0;late_window_closed=false;}
+    }
     unsigned completed_step() const {
         if(phase==Phase::failed)return failed_step;
         if(phase==Phase::aiming)return 2;
@@ -58,7 +71,12 @@ public:
     }
     void tick(const c2::rdr::State& r,const c2::fcs::Snapshot& f,bool same_target,
               Clock::time_point now,double sample_now) {
-        if(!active()||terminal())return;
+        if(!active()||(terminal()&&!awaiting_observation()))return;
+        if(awaiting_observation()&&now-began>late_observation_limit){
+            if(phase==Phase::observing)fail(Result::result_unconfirmed);
+            late_window_closed=true;
+            return;
+        }
         if(!r.connected||r.generation!=generation){fail(Result::lidar_disconnected);return;}
         if(r.thermal_fault()){fail(Result::lidar_thermal_fault);return;}
         if(r.mode!=2||!r.reporting){fail(Result::target_pending);return;}
@@ -79,14 +97,17 @@ public:
             if(r.lidar_result>1||now-began>=std::chrono::duration<double>(c2::rdr::lidar_command_timeout_seconds)){
                 fail(r.thermal_warning()?Result::lidar_stop_warning_unconfirmed:Result::lidar_stop_unconfirmed);return;
             }
-            if(stopped(r)&&fresh&&aligned&&!(flags&14))enter(Phase::paused,now);
+            if(stopped(r)&&fresh&&aligned&&!(flags&14)){
+                paused_at=now;enter(Phase::paused,now);
+            }
         } else if(phase==Phase::paused) {
+            // Wait for an explicit operator request without a time limit.
             if(!stopped(r)||!aligned||(flags&14))fail(Result::lidar_stop_unconfirmed);
         } else if(phase==Phase::firing) {
             if(!stopped(r)){fail(r.thermal_warning()?Result::lidar_stop_warning_unconfirmed:Result::lidar_stop_unconfirmed);return;}
             if(fresh&&(flags&12))output_seen=true;
             if(fresh&&output_seen&&!(flags&14))enter(Phase::fired,now);
-            else if(now-began>std::chrono::seconds(8))fail(Result::fcs_off_unconfirmed);
+            else if(now-began>=capture_completion_timeout)fail(Result::fcs_off_unconfirmed);
         } else if(phase==Phase::fired) {
             // Operator-paced wait after confirmed completion; no pause deadline.
             if(!stopped(r)){fail(r.thermal_warning()?Result::lidar_stop_warning_unconfirmed:Result::lidar_stop_unconfirmed);return;}
@@ -97,28 +118,38 @@ public:
                 fail(Result::lidar_resume_unconfirmed);return;
             }
             if(resumed(r)){resume_sample=sample_now;result_started=true;enter(Phase::observing,now);}
-        } else if(phase==Phase::observing) {
+        } else if(awaiting_observation()) {
             if(!resumed(r)){fail(Result::lidar_unknown);return;}
+            if(flags&14){fail(Result::fcs_off_unconfirmed);return;}
+            const auto observed=[&](const auto& t) {
+                return t.seen>resume_sample&&t.seen<=sample_now&&sample_now-t.seen<=3&&
+                    t.track_state==1&&t.detected==1&&!r.excluded.contains(t.id);
+            };
             const auto it=r.targets.find(uint16_t(target));
-            if(it!=r.targets.end()&&it->second.seen>resume_sample&&
-               it->second.track_state==1&&it->second.detected==1){enter(Phase::alive,now);return;}
-            // A replacement ID at the capture position still means an object remains.
+            if(it!=r.targets.end()&&observed(it->second)){enter(Phase::alive,now);return;}
+            // A unique nearby replacement requires two distinct observations.
+            // Repeated ECS ticks over one packet are not additional evidence.
+            const c2::rdr::Target* candidate=nullptr;
+            bool ambiguous=false;
             if(capture_reference)for(const auto& [id,t]:r.targets) {
                 const auto& ref=*capture_reference;
                 const auto point=c2::rdr::sensor_to_base(t);
-                if(point&&t.seen>resume_sample&&t.track_state==1&&t.detected==1&&
+                if(point&&observed(t)&&
                    std::hypot(point->east-ref.east,point->north-ref.north,point->up-ref.up)<=0.15) {
-                    enter(Phase::alive,now);return;
+                    if(candidate){ambiguous=true;break;}
+                    candidate=&t;
                 }
             }
-            if(now-began>=std::chrono::seconds(3)) {
-                // Camera workflow result, not verification of an image file.
-                if(output_seen&&result_started&&capture_reference&&r.lidar_known&&r.lidar_on&&!(flags&14))
-                    enter(Phase::hit,now);
-                else fail(Result::result_unconfirmed);
+            if(candidate&&!ambiguous) {
+                if(observation_candidate==candidate->id&&candidate->seen>candidate_seen&&
+                   candidate->seen-candidate_seen<=3){enter(Phase::alive,now);return;}
+                observation_candidate=candidate->id;candidate_seen=candidate->seen;
+            } else {observation_candidate=0;candidate_seen=0;}
+            if(phase==Phase::observing&&now-began>=std::chrono::seconds(3)) {
+                // Absence is never evidence of HIT. Continue read-only observation
+                // for this result until the bounded late-arrival window expires.
+                fail(Result::result_unconfirmed);
             }
         }
-        if((phase==Phase::pausing||phase==Phase::paused||phase==Phase::firing)&&
-           now-paused_at>=std::chrono::seconds(10))fail(Result::pause_timeout);
     }
 };

@@ -61,11 +61,12 @@ def run(executable, new_identity=False):
             assert ask('fcs laser on')['result']==0
             paused = target_records(gui.wait(lambda f: len(target_records(f))==10 and all(t[8]==4 and t[9]==0 for t in target_records(f))))
             assert {t[0] for t in paused}==ids
-            # Longer than the normal 3s DE03 expiration: rows and coordinates persist.
-            end = time.monotonic()+3.3
+            # Beyond both DE03 expiry and the former 10s display deadline.
+            end = time.monotonic()+12
             while time.monotonic()<end:
                 rows=target_records(gui.frame())
                 assert {t[0] for t in rows}==ids and all(t[8]==4 and t[9]==0 for t in rows)
+                assert {t[0]: t[1:8] for t in rows} == {t[0]: t[1:8] for t in paused}
                 assert gui.command(1, target=min(ids))!=0
                 time.sleep(.1)
             # Prevent fresh data briefly after resume to exercise WAITING explicitly.
@@ -81,7 +82,7 @@ def run(executable, new_identity=False):
             with board.lock: board.scenario='normal'
             if new_identity:
                 after=target_records(gui.wait(lambda f: any(t[0]==2001 and t[9] for t in target_records(f)),timeout=7))
-                assert not any(t[0] in ids and t[9] for t in after)
+                assert not any(t[0] in ids and (t[9] or t[8] in (4,5)) for t in after) # No old/new display overlap.
                 gui.wait(lambda f: all(t[0] not in ids or (not t[9] and t[8] not in (4,5)) for t in target_records(f)),timeout=5)
             else:
                 after=target_records(gui.wait(lambda f: valid_count(f)==10))

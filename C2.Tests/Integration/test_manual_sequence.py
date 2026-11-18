@@ -58,7 +58,7 @@ def run(executable,scenario):
                 send(1005,1) # Cannot emit while physical OFF remains unknown.
                 if scenario=='unknown_then_off':board.boot_unknown=False
             if scenario in ('unknown','drop_stop'):
-                until(3,9)
+                until(3,70)
                 assert not any(e[:2]==('fcs',1) for e in board.events)
                 send(1005,1)
                 board.boot_unknown=False;board.drop_stop=False
@@ -88,11 +88,12 @@ def run(executable,scenario):
                         with board.lock:board.targets=[{'id':2001,'xyz':(-1.4,2.8,.35) if scenario=='new_id' else (1.4,4.8,.35)}]
                     send(1007);until(107)
                     if scenario in ('missing','different_location'):
-                        until(108)
+                        until(3)
                         gui.command(1010)
-                        assert gui.last_response[4]==0 and gui.last_response[7:9]==(108,8),gui.last_response
+                        assert gui.last_response[4]==24 and gui.last_response[7:9]==(3,7),gui.last_response
                     elif scenario=='new_id':
                         until(111) # Same position under a new ID is still occupied.
+                        send(1009,8) # Missing original ID must not masquerade as FCS unavailable (2).
                     else:
                         until(111)
                         gui.wait(lambda f:any(t[0]==target and t[9] for t in target_records(f)))

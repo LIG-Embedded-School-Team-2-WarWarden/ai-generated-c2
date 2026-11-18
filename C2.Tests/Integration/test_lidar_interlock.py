@@ -131,7 +131,7 @@ def run(executable, scenario):
             def ask(command):
                 process.stdin.write(command + '\n')
                 process.stdin.flush()
-                return output.get(timeout=9)
+                return output.get(timeout=70)
             wait_for(lambda: ask('rdr status')['connected'])
             if scenario not in ('boot_fcs_disconnected', 'boot_fcs_disabled'):
                 wait_for(lambda: ask('fcs status')['connected'])
@@ -161,7 +161,7 @@ def run(executable, scenario):
                 assert gui.command(6, target=1) == 0
                 if scenario in ('boot_resume_drop', 'boot_off_failure'):
                     expected = 21 if scenario == 'boot_resume_drop' else 22
-                    wait_for(lambda: gui.command(18) == expected, timeout=15)
+                    wait_for(lambda: gui.command(18) == expected, timeout=75 if scenario == 'boot_resume_drop' else 15)
                     assert struct.unpack_from('<I', gui.frame(), 40)[0] == 0
                     assert not any(e[:2] == ('fcs', 1) for e in board.events)
                     if scenario == 'boot_off_failure':
@@ -218,7 +218,7 @@ def run(executable, scenario):
                 assert board.lidar_inhibited
                 assert not any(e[:2] == ('fcs', 1) for e in board.events)
                 stop_count = board.events.count(('rdr', 0))
-                # Recovery must complete well before the former 40-second timeout.
+                # After expiry, recovery uses a new operation without another full wait.
                 recovered_at = time.monotonic()
                 assert ask('fcs laser off')['result'] == 0
                 wait_for(lambda: not board.lidar_inhibited, timeout=5)
