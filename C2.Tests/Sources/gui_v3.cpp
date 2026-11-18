@@ -1,6 +1,7 @@
 #include "protocol.hpp"
 #include "rdr_control.hpp"
 #include "fcs_angles.hpp"
+#include "fcs_geometry.hpp"
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -23,13 +24,13 @@ struct GuiDriver {
 };
 int gui_v3_entry() {
     namespace gui=c2::ipc;
-    for(unsigned code=15;code<=25;++code) {
+    for(unsigned code=15;code<=27;++code) {
         gui::PipeResponse response;response.command=3;response.result=code;
         gui::PipeResponse parsed_response;
         check(gui::deserialize(gui::serialize(response),parsed_response) && parsed_response.result==code,
             "optical interlock diagnostic response roundtrip");
     }
-    gui::PipeResponse invalid_response;invalid_response.result=26;
+    gui::PipeResponse invalid_response;invalid_response.result=28;
     gui::PipeResponse parsed_response;
     check(!gui::deserialize(gui::serialize(invalid_response),parsed_response),"reject undefined result");
     gui::PipeResponse diagnostic;diagnostic.command=1010;diagnostic.assignment=3;diagnostic.result=24;diagnostic.active=7;
@@ -155,6 +156,24 @@ int gui_v3_entry() {
         fcs_point_angles(-1,1,0,-180,0).azimuth==315,
         "calibrated PAN wraps in both directions");
     const auto far_angles=fcs_point_angles(10,10,0,2.5,-3.5);
+    FcsGeometry geometry;geometry.enabled=true;geometry.translation={1,0,0};
+    check(fcs_calibrated_angles(0,1,0,0,0,geometry).azimuth==225 &&
+        fcs_calibrated_angles(0,10,0,0,0,geometry).azimuth==185.7,
+        "3D translation produces distance-dependent angles");
+    geometry.translation={};geometry.rotation={0,0,std::numbers::pi/2};
+    check(fcs_calibrated_angles(1,0,0,2,-3,geometry).azimuth==182 &&
+        fcs_calibrated_angles(1,0,0,2,-3,geometry).elevation==-3,
+        "3D rotation convention and manual trim exactly once");
+    geometry.enabled=false;
+    check(fcs_calibrated_angles(1,1,0,2.5,-3.5,geometry).azimuth==offset_angles.azimuth,
+        "disabled geometry preserves legacy formula");
+    for(auto command_id:{1110u,1111u}) {
+        gui::PipeResponse model;model.command=command_id;model.fcs_id=std::bit_cast<uint32_t>(-.3f);
+        model.target_id=std::bit_cast<uint32_t>(.2f);model.assignment=std::bit_cast<uint32_t>(.01f);model.active=1;
+        gui::PipeResponse decoded;check(gui::deserialize(gui::serialize(model),decoded),"geometry IPC float triples roundtrip");
+        model.assignment=std::bit_cast<uint32_t>(std::numeric_limits<float>::infinity());
+        check(!gui::deserialize(gui::serialize(model),decoded),"nonfinite geometry reply rejected");
+    }
     check(far_angles.azimuth==offset_angles.azimuth && far_angles.elevation==offset_angles.elevation,
         "angular calibration is independent of target distance");
     const auto live_angles=fcs_point_angles(.458599,1.890695,-.225648);

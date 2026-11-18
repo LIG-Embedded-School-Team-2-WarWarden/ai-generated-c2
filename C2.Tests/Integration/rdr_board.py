@@ -96,7 +96,7 @@ class Board:
                     continue
                 assert len(data) == 24, f"Unexpected RDR datagram length: {len(data)}"
                 request = list(struct.unpack("!12H", data))
-                assert request[0] in (0xED01, 0xED02, 0xED03, 0xED04, 0xED06, 0xED07)
+                assert request[0] in (0xED01, 0xED02, 0xED03, 0xED04, 0xED06, 0xED07, 0xED08)
                 self.requests.append(request[0])
                 self.wire.append(data)
                 if self.drop:
@@ -121,6 +121,8 @@ class Board:
                 response = None
                 if request[0] in (0xED01, 0xED02):
                     response = self.packet(request[0] - 0xF00, request[1], int(self.mode == 2))
+                elif request[0] == 0xED08:
+                    response = self.packet(0xDE08, request[1], 255)  # The fixture has no temperature telemetry.
                 elif request[0] == 0xED03:
                     self.reporting = bool(request[3])
                 elif request[0] == 0xED04:

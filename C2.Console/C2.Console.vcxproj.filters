@@ -24,6 +24,11 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Headers\batch_sequence.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="Headers\rdr_control.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>

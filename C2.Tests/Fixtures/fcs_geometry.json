@@ -1,0 +1,16 @@
+{
+  "Description": "C# GeometrySolver fitted to 27 synthetic training points with 0.1 degree quantization; 6 independent validation points. Regenerate via camera-calibration-check GeometryChecks.",
+  "Model": {
+    "Enabled": true,
+    "Translation": [
+      0.3208313332617131,
+      -0.16921376138198574,
+      0.11919223932692063
+    ],
+    "Rotation": [
+      0.04517391967444717,
+      -0.030050597367993585,
+      0.055052076116219394
+    ]
+  }
+}

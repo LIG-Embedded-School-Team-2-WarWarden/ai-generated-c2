@@ -83,6 +83,7 @@
   <ItemGroup>
     <ClInclude Include="Headers\assignment_position_guard.hpp" />
     <ClInclude Include="Headers\assignment_health.hpp" />
+    <ClInclude Include="Headers\batch_sequence.hpp" />
     <ClInclude Include="Headers\fcs_angles.hpp" />
     <ClInclude Include="Headers\installation_config.hpp" />
     <ClInclude Include="Headers\rdr_control.hpp" />

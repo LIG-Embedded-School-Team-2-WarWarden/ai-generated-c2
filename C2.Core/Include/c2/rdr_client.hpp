@@ -14,7 +14,7 @@ class Client {
         std::vector<std::byte> bytes;for(auto v:p)bytes.push_back(std::byte(v));transport_.send(bytes,peer_);
     }}
 public:
-    Client(UdpConfig local,Endpoint peer):peer_(std::move(peer)),session_(std::random_device{}()),
+    Client(UdpConfig local,Endpoint peer,bool sensor_health=false):peer_(std::move(peer)),session_(std::random_device{}()),
         transport_(std::move(local),[this](auto bytes,auto from){
             if(from.address!=peer_.address||from.port!=peer_.port||(bytes.size()!=24&&bytes.size()!=32)){
                 diagnostic("RDR","rx_rejected",{{"reason","unexpected_peer_or_length"},
@@ -23,6 +23,7 @@ public:
             std::lock_guard lock(mutex_);session_.receive(p,seconds());flush();
         }){
             if(peer_.address.empty() || !peer_.port)throw std::invalid_argument("invalid RDR endpoint");
+            session_.enable_sensor_health(sensor_health);
             transport_.start();
         }
     ~Client(){transport_.stop();}

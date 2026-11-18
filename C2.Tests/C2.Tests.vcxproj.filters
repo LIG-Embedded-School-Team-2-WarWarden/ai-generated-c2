@@ -36,6 +36,11 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Sources\batch_sequence.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="Sources\rdr_board.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>

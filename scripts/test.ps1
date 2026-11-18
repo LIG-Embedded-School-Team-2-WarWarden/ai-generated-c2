@@ -5,8 +5,12 @@ Push-Location $root
 try {
     & "./x64/$Configuration/C2.Tests.exe"
     if($LASTEXITCODE){throw 'Binary ICD unit tests failed.'}
+    python ./C2.Tests/Integration/test_batch_disconnected.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw 'Batch camera IPC routing checks failed.'}
     python ./C2.Tests/Integration/test_device_diagnostics.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Device diagnostics scenarios failed.'}
+    python ./C2.Tests/Integration/test_thermal_policy.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw 'Thermal policy scenarios failed.'}
     python ./C2.Tests/Integration/test_manual_sequence.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Manual GUI sequence scenarios failed.'}
     python ./C2.Tests/Integration/test_retention_regressions.py --console "./x64/$Configuration/C2.Console.exe"
@@ -17,6 +21,10 @@ try {
     if($LASTEXITCODE){throw 'Lidar optical interlock scenarios failed.'}
     python ./C2.Tests/Integration/test_angle_calibration.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Independent PAN/TILT calibration scenarios failed.'}
+    python ./C2.Tests/Integration/test_calibration_mode.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw 'GUI calibration mode scenarios failed.'}
+    python ./C2.Tests/Integration/test_geometry_calibration.py --console "./x64/$Configuration/C2.Console.exe"
+    if($LASTEXITCODE){throw '3D geometry calibration scenarios failed.'}
     python ./C2.Tests/Integration/test_camera_settings.py --console "./x64/$Configuration/C2.Console.exe"
     if($LASTEXITCODE){throw 'Camera settings persistence scenarios failed.'}
     python ./C2.Tests/Integration/test_installation_persistence.py --console "./x64/$Configuration/C2.Console.exe"
