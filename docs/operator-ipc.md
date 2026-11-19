@@ -80,6 +80,9 @@ positionX@28, positionY@32, positionZ@36은 float(m)입니다. 응답은 request
 | 4 | SetRdrElevation | targetId=0~900, 0.1도 단위. 현재 ED/DE 보드는 명령이 없어 NotSupported |
 | 5 | SetAssetPosition | RDR: rdrId=1/fcsId=0, FCS: rdrId=0/fcsId=1. 유한한 XYZ 필요 |
 | 6 | SetRdrOperating | rdrId=fcsId=1, targetId=0 정지/1 구동 |
+| 1003 / 1203 | StartManualAim / AimBatchTarget | positionX=GUI 방위각(0° 이상 360° 미만), positionY=고각(0°~90°), positionZ=0. 두 각도가 모두 0이면 구버전 GUI와 호환되도록 관측 좌표에서 각도를 계산합니다. |
+
+GUI 방위각의 정면 135°를 장치 방위각의 정면 180°로 변환합니다. GUI가 각도를 지정하면 변환한 각도를 0.1° 단위로 전송하고 같은 값으로 정렬을 확인합니다.
 
 `Active`는 명칭 변경이며 명령 번호 3과 EF05 요청 동작은 유지합니다. 응답의 `active` 필드는 기존과 동일한 offset 32의 uint32이며, 값의 의미와 응답 크기 40바이트도 유지합니다. 이름 문자열은 전송하지 않으므로 기존 GUI 바이너리와 통신할 수 있습니다. 별도 GUI의 화면 문구는 해당 저장소에서 변경해야 하며, C++ 헤더를 직접 참조하는 외부 소스는 변경된 멤버명에 맞춰 수정해야 합니다.
 

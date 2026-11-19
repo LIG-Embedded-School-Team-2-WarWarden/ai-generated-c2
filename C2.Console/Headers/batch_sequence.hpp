@@ -110,7 +110,8 @@ public:
             if(!pending)phase_=Phase::idle;
         }
     }
-    Result command(uint32_t command,uint32_t id,const Context& c,const Actions& actions) {
+    Result command(uint32_t command,uint32_t id,const Context& c,const Actions& actions,
+                   std::optional<FcsPointAngles> aim_override={}) {
         if(!c2::ipc::is_batch_command(command)||id>65535||(!id&&command!=1200))return Result::invalid_request;
         // Discovery/query success is independent of device readiness. GUI uses
         // connected and state/flags separately, and ignores non-success status replies.
@@ -168,6 +169,10 @@ public:
             if(s.phase!=P::registered||phase_!=Phase::paused||!row.frozen)return Result::invalid_request;
             if(current_||(c.fcs.status->flags&14))return Result::device_busy;
             if(!ManualSequence::stopped(c.rdr))return stop_error(c);
+            if(aim_override) {
+                s.pan=aim_override->azimuth;
+                s.tilt=aim_override->elevation;
+            }
             // Own the slot before issuing IO, including unknown/exception outcomes.
             current_=id;s.enter(P::aiming,c.now);
             return perform([&]{return actions.point(s.tilt,s.pan);},Result::device_error);
