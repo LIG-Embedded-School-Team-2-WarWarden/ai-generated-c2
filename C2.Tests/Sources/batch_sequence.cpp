@@ -86,6 +86,22 @@ int batch_sequence_entry() {
             p.command=0;p.active=2;check(!c2::ipc::deserialize(c2::ipc::serialize(p),decoded));
         }
     }
+    { // GUI angle overrides are per row and become the alignment reference.
+        Fixture x;
+        check(x.send(1201)==R::success&&x.send(1201,8)==R::success);
+        x.pause();
+        const auto angles=gui_fcs_point_override(314.99,12.34,0);
+        check(angles&&angles->azimuth==0&&angles->elevation==12.3);
+        check(!gui_fcs_point_override(0,0,0));
+        check(x.batch.command(1203,7,x.context(),x.actions,angles)==R::success);
+        check(x.moves==1&&x.f.status->azimuth==0&&x.f.status->elevation==12.3);
+        check(x.batch.command(1203,7,x.context(),x.actions,gui_fcs_point_override(130,20,0))==R::success);
+        check(x.moves==1&&x.f.status->azimuth==0);
+        x.advance();check(x.batch.state(7)==104);
+        check(x.send(1202)==R::success);
+        x.capture(8);
+        check(x.f.status->azimuth!=0);
+    }
     { // Two objects, one STOP, serial camera use, one resume and independent results.
         Fixture x;
         check(x.send(1200,0)==R::success);check(x.send(1200,99)==R::success&&!x.batch.state(99));

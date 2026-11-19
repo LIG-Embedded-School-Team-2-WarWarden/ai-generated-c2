@@ -802,7 +802,12 @@ int main(int argc, char** argv) {
                             const auto result=command_result("EF04_OFF_BATCH",reply);
                             return result==gui::Result::success&&reply->laser_state!=0?gui::Result::fcs_off_unconfirmed:result;
                         };
-                        try{result=batch.command(request.command,request.target_id,batch_context(),actions);}
+                        try {
+                            std::optional<FcsPointAngles> aim_override;
+                            if(request.command==uint32_t(gui::Command::aim_batch_target))
+                                aim_override=gui_fcs_point_override(request.position_x,request.position_y,request.position_z);
+                            result=batch.command(request.command,request.target_id,batch_context(),actions,aim_override);
+                        }
                         catch(const std::invalid_argument& error){result=gui::Result::invalid_request;log(error.what());}
                         catch(const std::exception& error){result=gui::Result::device_error;log(error.what());}
                     }
@@ -966,7 +971,8 @@ int main(int argc, char** argv) {
                             else if(assigned_now==observation.targets.end()||!observation.scanning||!observation.streaming||
                                 rdr_state.lidar_inhibited||(flags&14))result=gui::Result::target_pending;
                             else {
-                                const auto angles=fcs_calibrated_angles(assigned_now->east+installation.eff_position[1],
+                                const auto aim_override=gui_fcs_point_override(request.position_x,request.position_y,request.position_z);
+                                const auto angles=aim_override?*aim_override:fcs_calibrated_angles(assigned_now->east+installation.eff_position[1],
                                     assigned_now->north-installation.eff_position[0],assigned_now->up-installation.eff_position[2],
                                     installation.fcs_angle_offset_deg[0],installation.fcs_angle_offset_deg[1],installation.fcs_geometry);
                                 manual.pan=commanded_pan=angles.azimuth;manual.tilt=commanded_tilt=angles.elevation;

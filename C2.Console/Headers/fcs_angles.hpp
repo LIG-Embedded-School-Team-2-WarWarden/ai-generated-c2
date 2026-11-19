@@ -1,6 +1,7 @@
 #pragma once
 #include <cmath>
 #include <numbers>
+#include <optional>
 #include <stdexcept>
 struct FcsPointAngles { double elevation{}, azimuth{}; };
 inline double fcs_pan_error(double actual, double requested) {
@@ -22,4 +23,13 @@ inline FcsPointAngles fcs_point_angles(double east, double north, double up,
 inline float fcs_motor_to_gui_azimuth(double motor) {
     auto degrees = std::fmod(std::round((motor-45)*10)/10, 360.);
     return float(degrees < 0 ? degrees+360 : degrees);
+}
+inline std::optional<FcsPointAngles> gui_fcs_point_override(double azimuth, double elevation, double reserved) {
+    if (!std::isfinite(azimuth) || azimuth < 0 || azimuth >= 360 ||
+        !std::isfinite(elevation) || elevation < 0 || elevation > 90 || reserved != 0)
+        throw std::invalid_argument("invalid GUI camera angles");
+    // Older pipe v3 clients send three zeroes for the same command.
+    if (azimuth == 0 && elevation == 0) return std::nullopt;
+    const double motor_azimuth = std::fmod(std::round((azimuth + 45) * 10) / 10, 360.);
+    return FcsPointAngles{std::round(elevation * 10) / 10, motor_azimuth};
 }

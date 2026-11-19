@@ -4,8 +4,23 @@ from pathlib import Path
 from test_lidar_interlock import Probe,ROOT,wait_for
 from test_station import Gui,target_records,valid_count
 
+class HeldPoseProbe(Probe):
+    held_pose = None
+
+    def _packet(self, kind, *args, **kwargs):
+        packet = super()._packet(kind, *args, **kwargs)
+        # Batch requires the fixture to hold its last reported pose during STOP.
+        if not self.lidar_inhibited:
+            self.held_pose = None
+        else:
+            if self.held_pose is None:
+                self.held_pose = packet[8:10]
+            packet[8:10] = self.held_pose
+        return packet
+
 def run(executable,scenario):
-    board=Probe();process=gui=None
+    board=HeldPoseProbe() if scenario=='gui_angles' else Probe()
+    process=gui=None
     try:
         with tempfile.TemporaryDirectory(prefix='manual-sequence-',ignore_cleanup_errors=True) as directory:
             config=json.loads((ROOT/'configs/team-demo.json').read_text())
@@ -31,8 +46,8 @@ def run(executable,scenario):
             gui=Gui(suffix);assert gui.command(6,target=1)==0
             rows=target_records(gui.wait(lambda f:valid_count(f)==10))
             target=rows[0][0]
-            def send(command,expected=0):
-                value=gui.command(command,target=target)
+            def send(command,expected=0,xyz=(0,0,0)):
+                value=gui.command(command,target=target,xyz=xyz)
                 assert value==expected,(command,value,gui.last_response,log.read_text(errors='replace'))
             def state():
                 gui.command(0);return gui.last_response[7]
@@ -44,7 +59,13 @@ def run(executable,scenario):
             send(1001) # Same registration is idempotent.
             send(1002,5);send(1006,5);send(1008,5)
             send(1005,1) # Cannot skip directly to emission.
-            send(1003);until(103)
+            if scenario=='gui_angles':
+                send(1003,1,xyz=(360,12.3,0))
+                assert state()==102
+                send(1003,xyz=(145.4,12.3,0));until(103)
+                assert (board.target_azimuth,board.target_elevation)==(190.4,12.3)
+            else:
+                send(1003);until(103)
             if scenario in ('unknown','unknown_then_off'):
                 board.boot_unknown=True
                 wait_for(lambda: gui.command(19)==0 and gui.last_response[7]==0)
@@ -99,6 +120,18 @@ def run(executable,scenario):
                         gui.wait(lambda f:any(t[0]==target and t[9] for t in target_records(f)))
                         send(1009);assert state()==102
                     send(2)
+                    if scenario=='gui_angles':
+                        send(1201);send(1204)
+                        def batch_status():
+                            send(1200)
+                            return gui.last_response
+                        wait_for(lambda:batch_status()[8]&1)
+                        send(1203,1,xyz=(120,float('nan'),0))
+                        assert batch_status()[7]==102
+                        send(1203,xyz=(130.2,7.6,0))
+                        wait_for(lambda:batch_status()[7]==104)
+                        assert (board.target_azimuth,board.target_elevation)==(175.2,7.6)
+                        send(1202)
                     if scenario=='five':
                         for row in rows[1:5]:
                             target=row[0]
@@ -125,5 +158,5 @@ if __name__=='__main__':
     # while testing the production client's intentionally short 80ms deadline.
     ctypes.windll.winmm.timeBeginPeriod(1)
     try:
-        for s in ([a.scenario] if a.scenario else ['normal','cancel','unknown','unknown_then_off','drop_stop','missing','new_id','different_location','five','wait_after_fire']):run(a.console.resolve(),s)
+        for s in ([a.scenario] if a.scenario else ['normal','gui_angles','cancel','unknown','unknown_then_off','drop_stop','missing','new_id','different_location','five','wait_after_fire']):run(a.console.resolve(),s)
     finally:ctypes.windll.winmm.timeEndPeriod(1)
