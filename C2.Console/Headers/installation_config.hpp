@@ -24,6 +24,8 @@ struct InstallationConfig {
     FcsGeometry fcs_geometry{};
     std::array<double, 3> ranges{1.5, 10.0, 3.0};
     std::array<double, 3> rdr_fov{120.0, 45.0, 0.0};
+    // Per-axis camera coverage extent (metres), number of square rings, reserved zero.
+    std::array<double, 3> continuous_photo{0.05, 1.0, 0.0};
     std::string observer_id{"RDR-1"}, effector_id{"FCS-1"};
 };
 
@@ -91,10 +93,15 @@ inline void validate_camera_settings(const InstallationConfig& value) {
         throw std::invalid_argument("FCS angle offsets: PAN [-180,180], TILT [-90,90], reserved 0");
     (void)camera_triple(value.ranges);
     (void)camera_triple(value.rdr_fov);
+    (void)camera_triple(value.continuous_photo);
     if (value.rdr_fov[0]<=0 || value.rdr_fov[0]>360 || value.rdr_fov[1]<=0 || value.rdr_fov[1]>180 || value.rdr_fov[2]!=0)
         throw std::invalid_argument("RDR horizontal FOV must be (0,360], vertical (0,180] degrees");
     if (value.ranges[0]<0 || value.ranges[1]<value.ranges[0] || value.ranges[2]<0)
         throw std::invalid_argument("Distances must be nonnegative and RDR maximum >= minimum");
+    if (value.continuous_photo[0]<=0 || value.continuous_photo[0]>1 ||
+        value.continuous_photo[1]<1 || value.continuous_photo[1]>20 ||
+        value.continuous_photo[1]!=std::floor(value.continuous_photo[1]) || value.continuous_photo[2]!=0)
+        throw std::invalid_argument("Continuous photo per-axis extent must be (0,1] metre, rings integer [1,20], reserved 0");
 }
 
 inline InstallationConfig parse_installation_config(const nlohmann::json& config) {
@@ -127,14 +134,23 @@ inline InstallationConfig parse_installation_config(const nlohmann::json& config
         if (camera.contains("fcs_angle_offset_deg")) result.fcs_angle_offset_deg=camera_triple(camera.at("fcs_angle_offset_deg"));
         if(camera.contains("fcs_geometry")) {
             const auto& g=camera.at("fcs_geometry");
-            if(g.at("version")!=1)throw std::invalid_argument("Unsupported FCS geometry version");
+            const int version=g.at("version").get<int>();
+            if(version!=1&&version!=2)throw std::invalid_argument("Unsupported FCS geometry version");
             auto& out=result.fcs_geometry;out.enabled=g.at("enabled").get<bool>();
             out.translation=camera_triple(g.at("translation_m"));out.rotation=camera_triple(g.at("rotation_rad"));
             out.rdr_anchor=camera_triple(g.at("rdr_anchor"));out.fcs_anchor=camera_triple(g.at("fcs_anchor"));
-            // A changed installation invalidates this measured transform.
-            if(out.rdr_anchor!=result.rdr_position || out.fcs_anchor!=result.eff_position)out.enabled=false;
+            if(version==1) {
+                // V1 transformed (world - configured FCS origin). Convert it once
+                // to V2's RDR-local frame so absolute installation edits no longer
+                // invalidate a measured RDR-to-camera relationship.
+                const auto rdr=fcs_gui_origin(out.rdr_anchor),fcs=fcs_gui_origin(out.fcs_anchor);
+                const std::array<double,3> delta{rdr[0]-fcs[0],rdr[1]-fcs[1],rdr[2]-fcs[2]};
+                const auto rotated=fcs_geometry_rotate(delta,out);
+                for(size_t i=0;i<3;++i)out.translation[i]+=rotated[i];
+            }
         }
         if (camera.contains("ranges")) result.ranges=camera_triple(camera.at("ranges"));
+        if (camera.contains("continuous_photo")) result.continuous_photo=camera_triple(camera.at("continuous_photo"));
         result.rdr_fov=camera_triple(nlohmann::json::array({
             camera.value("rdr_horizontal_fov_deg", nlohmann::json(120.0)),
             camera.value("rdr_vertical_fov_deg", nlohmann::json(45.0)), 0}));
@@ -189,12 +205,13 @@ inline void save_installation_settings(const std::filesystem::path& path,
     validate_camera_settings(value);
     settings["camera"]["fcs_angle_offset_deg"]=value.fcs_angle_offset_deg;
     const auto& geometry=value.fcs_geometry;
-    settings["camera"]["fcs_geometry"]={{"version",1},{"enabled",geometry.enabled},
+    settings["camera"]["fcs_geometry"]={{"version",2},{"enabled",geometry.enabled},
         {"translation_m",geometry.translation},{"rotation_rad",geometry.rotation},
         {"rdr_anchor",geometry.rdr_anchor},{"fcs_anchor",geometry.fcs_anchor}};
     settings["camera"].erase("rdr_zero"); // Remove retired keys when saving older files.
     settings["camera"].erase("fcs_zero");
     settings["camera"]["ranges"]=value.ranges;
+    settings["camera"]["continuous_photo"]=value.continuous_photo;
     settings["camera"]["rdr_horizontal_fov_deg"]=value.rdr_fov[0];
     settings["camera"]["rdr_vertical_fov_deg"]=value.rdr_fov[1];
     (void)parse_installation_config(settings);

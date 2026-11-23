@@ -2,6 +2,7 @@
 #include "rdr_control.hpp"
 #include "fcs_angles.hpp"
 #include "fcs_geometry.hpp"
+#include "installation_config.hpp"
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -69,17 +70,18 @@ int gui_v3_entry() {
     driver.state.mode=2;driver.state.last_result=0;driver.state.pan=1800;driver.state.tilt=123;
     auto& observation=driver.state.targets[7];
     observation.id=7;observation.z=2;observation.status=0;observation.pan=2700;
-    observation.tilt=0;observation.detected=1;observation.track_state=1;adapter.tick(2);
+    observation.tilt=0;observation.detected=1;observation.track_state=1;observation.seen=2;adapter.tick(2);
     gui::Payload payload;adapter.populate(payload);
     check(payload.rdr.azimuth==135 && payload.rdr.elevation==12.3f,"wire PAN=1800 is legacy GUI center=135");
     check(payload.rdr.operating && payload.targets[0].valid,"active observations valid");
     check(std::abs(payload.targets[0].x-2)<1e-5 && std::abs(payload.targets[0].y)<1e-5 &&
         payload.targets[0].azimuth==90,"use target observation pose with east=90 and no map offset");
     observation.track_state=2;observation.detected=0;adapter.populate(payload);
-    check(payload.targets[0].id==7 && payload.targets[0].valid,
-        "prediction preserves ID and usable coordinate");
+    check(payload.targets[0].id==7 && !payload.targets[0].valid && payload.targets[0].status==5 &&
+        std::abs(payload.targets[0].x-2)<1e-5 && payload.targets[0].azimuth==90,
+        "prediction preserves display coordinate but waits for a control observation");
     observation.pan=-32768;adapter.populate(payload);
-    check(!payload.targets[0].valid && observation.z==2,
+    check(!payload.targets[0].valid && payload.targets[0].status==2 && observation.z==2,
         "unknown pose preserves raw data without inventing a world coordinate");
     observation.pan=2700;
 
@@ -88,23 +90,26 @@ int gui_v3_entry() {
     struct PoseFixture { double x,y,z; int pan,tilt; };
     const PoseFixture fixed_point[]{{-2,1,3,1800,0},
         {3,-.1339745962,2.2320508076,2700,300}};
-    auto fixed_world_point=[&]() {
+    auto fixed_world_point=[&](bool observed) {
         const auto& target=payload.targets[0];
-        return payload.target_count==1 && target.id==7 && target.valid &&
+        return payload.target_count==1 && target.id==7 && bool(target.valid)==observed &&
+            target.status==(observed?0:5) &&
             std::abs(target.x-2)<1e-5 && std::abs(target.y-3)<1e-5 &&
             std::abs(target.z-1)<1e-5;
     };
     for(const auto& fixture:fixed_point) for(uint16_t track_state:{1,2}) {
+        const bool observed=track_state==1;
         observation.x=fixture.x;observation.y=fixture.y;observation.z=fixture.z;
         observation.pan=fixture.pan;observation.tilt=fixture.tilt;
-        observation.track_state=track_state;observation.detected=track_state==1;
+        observation.track_state=track_state;observation.detected=observed;
         driver.state.pan=2250;driver.state.tilt=-175;adapter.populate(payload);
-        check(fixed_world_point(),"changed observation PAN/TILT preserves observed and predicted world point");
+        check(fixed_world_point(observed),"changed observation PAN/TILT preserves observed and predicted world point");
         driver.state.pan=900;driver.state.tilt=450;adapter.populate(payload);
-        check(fixed_world_point(),"current device PAN/TILT cannot move an earlier observed or predicted point");
+        check(fixed_world_point(observed),"current device PAN/TILT cannot move an earlier observed or predicted point");
         payload.rdr.position_x=1;payload.rdr.position_y=-2;payload.rdr.position_z=.5;
         adapter.populate(payload);
-        check(payload.targets[0].valid && std::abs(payload.targets[0].x-3)<1e-5 &&
+        check(bool(payload.targets[0].valid)==observed && payload.targets[0].status==(observed?0:5) &&
+            std::abs(payload.targets[0].x-3)<1e-5 &&
             std::abs(payload.targets[0].y-1)<1e-5 && std::abs(payload.targets[0].z-1.5)<1e-5,
             "every GUI entry point sends world XYZ including RDR position at both observation poses");
         payload.rdr.position_x=payload.rdr.position_y=payload.rdr.position_z=0;
@@ -119,6 +124,13 @@ int gui_v3_entry() {
             "unknown TILT alone invalidates GUI point without changing raw XYZ or PAN");
         observation.tilt=fixture.tilt;
     }
+    observation.track_state=observation.detected=1;observation.status=0;observation.seen=2;
+    adapter.tick(5.01);adapter.populate(payload);
+    check(!payload.targets[0].valid && payload.targets[0].status==5,
+        "an old observed coordinate remains visible but cannot be assigned");
+    observation.seen=5.01;adapter.populate(payload);
+    check(payload.targets[0].valid && payload.targets[0].status==0,
+        "a fresh observed coordinate becomes assignable again");
     // Capture and correct a single observation snapshot before the live driver
     // changes. Publication and pointing must use that same corrected point.
     const auto snapshot=driver.state;
@@ -167,6 +179,36 @@ int gui_v3_entry() {
     geometry.enabled=false;
     check(fcs_calibrated_angles(1,1,0,2.5,-3.5,geometry).azimuth==offset_angles.azimuth,
         "disabled geometry preserves legacy formula");
+    geometry.enabled=true;geometry.translation={.25,-.1,.05};geometry.rotation={.02,-.03,.04};
+    const std::array<double,3> rdr_a{10,-2,1},fcs_a{-4,6,.5},rdr_b{-30,12,8},fcs_b{70,-25,-3};
+    const auto origin_a=fcs_gui_origin(rdr_a),origin_b=fcs_gui_origin(rdr_b);
+    const std::array<double,3> local{1,5,.5};
+    const auto local_a=fcs_target_angles(origin_a[0]+local[0],origin_a[1]+local[1],origin_a[2]+local[2],
+        rdr_a,fcs_a,2.5,-3.5,geometry);
+    const auto local_b=fcs_target_angles(origin_b[0]+local[0],origin_b[1]+local[1],origin_b[2]+local[2],
+        rdr_b,fcs_b,2.5,-3.5,geometry);
+    check(local_a.azimuth==local_b.azimuth&&local_a.elevation==local_b.elevation,
+        "RDR-local 3D calibration must ignore absolute RDR/FCS installation coordinates");
+    geometry.enabled=false;
+    const auto legacy_a=fcs_target_angles(origin_a[0]+local[0],origin_a[1]+local[1],origin_a[2]+local[2],
+        rdr_a,fcs_a,2.5,-3.5,geometry);
+    const auto legacy_b=fcs_target_angles(origin_b[0]+local[0],origin_b[1]+local[1],origin_b[2]+local[2],
+        rdr_b,fcs_b,2.5,-3.5,geometry);
+    check(legacy_a.azimuth!=legacy_b.azimuth||legacy_a.elevation!=legacy_b.elevation,
+        "legacy uncalibrated pointing still needs installation coordinates");
+    const nlohmann::json legacy_geometry={
+        {"observer","R"},{"effector","F"},
+        {"devices",{{"R",{{"role","OBS"},{"position",{100,200,300}}}},
+                    {"F",{{"role","EFF"},{"position",{-50,80,20}}}}}},
+        {"camera",{{"fcs_geometry",{{"version",1},{"enabled",true},
+            {"translation_m",{.1,.2,.3}},{"rotation_rad",{0,0,0}},
+            {"rdr_anchor",{10,2,1}},{"fcs_anchor",{7,-1,.5}}}}}}};
+    const auto migrated=parse_installation_config(legacy_geometry);
+    check(migrated.fcs_geometry.enabled&&
+        std::abs(migrated.fcs_geometry.translation[0]+2.9)<1e-9&&
+        std::abs(migrated.fcs_geometry.translation[1]-3.2)<1e-9&&
+        std::abs(migrated.fcs_geometry.translation[2]-.8)<1e-9,
+        "V1 absolute-FCS geometry did not migrate to the RDR-local frame");
     for(auto command_id:{1110u,1111u}) {
         gui::PipeResponse model;model.command=command_id;model.fcs_id=std::bit_cast<uint32_t>(-.3f);
         model.target_id=std::bit_cast<uint32_t>(.2f);model.assignment=std::bit_cast<uint32_t>(.01f);model.active=1;

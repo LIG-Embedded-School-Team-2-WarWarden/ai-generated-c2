@@ -86,17 +86,42 @@ int batch_sequence_entry() {
             p.command=0;p.active=2;check(!c2::ipc::deserialize(c2::ipc::serialize(p),decoded));
         }
     }
+    { // Continuous-photo targets retain GUI registration order, not numeric ID order.
+        Fixture x;
+        check(x.send(1201,9)==R::success&&x.send(1201,7)==R::success&&x.send(1201,8)==R::success);
+        x.pause();
+        const auto targets=x.batch.photo_targets();
+        check(targets.size()==3&&targets[0].id==9&&targets[1].id==7&&targets[2].id==8);
+        for(const auto& target:targets)check(target.distance_m>0);
+    }
     { // GUI angle overrides are per row and become the alignment reference.
         Fixture x;
         check(x.send(1201)==R::success&&x.send(1201,8)==R::success);
         x.pause();
         const auto angles=gui_fcs_point_override(314.99,12.34,0);
         check(angles&&angles->azimuth==0&&angles->elevation==12.3);
+        const auto lower_limit=gui_fcs_point_override(180,-30,0);
+        check(lower_limit&&lower_limit->azimuth==225&&lower_limit->elevation==-30);
+        bool below_limit_rejected=false;
+        try{(void)gui_fcs_point_override(180,-30.1,0);}
+        catch(const std::invalid_argument&){below_limit_rejected=true;}
+        check(below_limit_rejected);
         check(!gui_fcs_point_override(0,0,0));
+        const auto explicit_zero=gui_fcs_point_override(0,0,1);
+        check(explicit_zero&&explicit_zero->azimuth==45&&explicit_zero->elevation==0);
         check(x.batch.command(1203,7,x.context(),x.actions,angles)==R::success);
         check(x.moves==1&&x.f.status->azimuth==0&&x.f.status->elevation==12.3);
         check(x.batch.command(1203,7,x.context(),x.actions,gui_fcs_point_override(130,20,0))==R::success);
         check(x.moves==1&&x.f.status->azimuth==0);
+        x.advance();check(x.batch.state(7)==104);
+        const auto automatic=x.batch.rows().at(7);
+        const auto corrected=gui_fcs_point_override(130,20,1);
+        check(x.batch.command(1203,7,x.context(),x.actions,corrected)==R::success);
+        check(x.moves==2&&x.f.status->azimuth==175&&x.f.status->elevation==20);
+        x.advance();check(x.batch.state(7)==104);
+        check(x.batch.command(1203,7,x.context(),x.actions,std::nullopt)==R::success);
+        check(x.moves==3&&x.f.status->azimuth==automatic.auto_pan&&
+            x.f.status->elevation==automatic.auto_tilt);
         x.advance();check(x.batch.state(7)==104);
         check(x.send(1202)==R::success);
         x.capture(8);
@@ -164,6 +189,19 @@ int batch_sequence_entry() {
         check(x.send(1202,8)==R::success);x.pause();
         x.r.generation++;x.advance();check(x.batch.state(7)==3&&x.batch.flags(x.context())==0);
         check(x.send(1203)==R::lidar_recovery_required&&x.moves==0);
+    }
+    { // A retry after reacquisition uses the same batch and sends STOP once.
+        Fixture x;check(x.send(1201)==R::success);check(x.send(1201,8)==R::success);
+        x.r.targets[8].track_state=2;x.r.targets[8].detected=0;
+        uint32_t missing=0;
+        check(x.batch.command(1204,7,x.context(),x.actions,{},&missing)==R::target_pending);
+        check(missing==8&&x.stops==0&&x.batch.rows().size()==2);
+        x.advance(1.1);
+        x.r.targets[8].track_state=x.r.targets[8].detected=1;
+        x.r.targets[8].seen=x.sample;
+        x.points=c2::rdr::correct_targets(x.r,{});
+        check(x.send(1204)==R::success&&x.stops==1);
+        check(x.send(1204)==R::success&&x.stops==1);
     }
     { // Use the latest control point at STOP, not the registration-time position.
         Fixture x;check(x.send(1201)==R::success);

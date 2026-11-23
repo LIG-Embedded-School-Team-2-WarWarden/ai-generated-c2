@@ -2,8 +2,10 @@
 #include "manual_sequence.hpp"
 #include "installation_config.hpp"
 #include "fcs_geometry.hpp"
+#include <algorithm>
 #include <functional>
 #include <utility>
+#include <vector>
 
 // Camera batch for GUI 37d7ab9. Only explicit operator requests move/capture.
 // Freeze a fresh, private observation set BEFORE STOP; the display retention
@@ -14,7 +16,8 @@ public:
     using Result=ManualSequence::Result;
     using P=ManualSequence::Phase;
     enum class Phase { idle, stopping, paused, resuming, observing, fault };
-    struct Row { ManualSequence sequence; bool frozen{}; };
+    struct Row { ManualSequence sequence; bool frozen{}; double photo_distance_m{},auto_pan{},auto_tilt{}; };
+    struct PhotoTarget { uint32_t id{}; double pan{}, tilt{}, distance_m{}; };
     struct Context {
         const c2::rdr::State& rdr;
         const c2::fcs::Snapshot& fcs;
@@ -32,6 +35,24 @@ public:
     bool active() const { return !rows_.empty(); }
     Phase phase() const { return phase_; }
     const auto& rows() const { return rows_; }
+    bool photo_pause_valid(const Context& context) const {
+        return phase_==Phase::paused&&ManualSequence::stopped(context.rdr)&&held_pose_matches(context.rdr)&&
+            common_error(context)==Result::success;
+    }
+    std::vector<PhotoTarget> photo_targets() const {
+        std::vector<PhotoTarget> targets;
+        if(phase_!=Phase::paused||current_||order_.size()!=rows_.size())return targets;
+        targets.reserve(order_.size());
+        for(const auto id:order_) {
+            const auto it=rows_.find(id);
+            if(it==rows_.end()||!it->second.frozen||it->second.sequence.phase!=P::registered||
+               !std::isfinite(it->second.photo_distance_m)||it->second.photo_distance_m<=.001)
+                return {};
+            const auto& s=it->second.sequence;
+            targets.push_back({id,s.pan,s.tilt,it->second.photo_distance_m});
+        }
+        return targets;
+    }
     unsigned state(uint32_t id) const {
         const auto it=rows_.find(id);return it==rows_.end()?0:it->second.sequence.state();
     }
@@ -111,7 +132,7 @@ public:
         }
     }
     Result command(uint32_t command,uint32_t id,const Context& c,const Actions& actions,
-                   std::optional<FcsPointAngles> aim_override={}) {
+                   std::optional<FcsPointAngles> aim_override={}, uint32_t* missing_observation=nullptr) {
         if(!c2::ipc::is_batch_command(command)||id>65535||(!id&&command!=1200))return Result::invalid_request;
         // Discovery/query success is independent of device readiness. GUI uses
         // connected and state/flags separately, and ignores non-success status replies.
@@ -130,7 +151,8 @@ public:
             }
             if(current_==id)current_=0;
             rows_.erase(it);
-            if(rows_.empty()){phase_=Phase::idle;off_requested_=false;}
+            order_.erase(std::remove(order_.begin(),order_.end(),id),order_.end());
+            if(rows_.empty()){phase_=Phase::idle;off_requested_=false;order_.clear();}
             return Result::success;
         }
         if(phase_==Phase::fault)return Result::lidar_recovery_required;
@@ -141,7 +163,7 @@ public:
             if(phase_!=Phase::idle||!c.interlock_idle||(c.fcs.status->flags&14))return Result::device_busy;
             if(!live_point(c,id))return Result::target_pending;
             Row row;row.sequence.target=id;row.sequence.generation=c.rdr.generation;
-            row.sequence.enter(P::registered,c.now);rows_.emplace(id,row);return Result::success;
+            row.sequence.enter(P::registered,c.now);rows_.emplace(id,row);order_.push_back(id);return Result::success;
         }
         if(it==rows_.end())return Result::not_assigned;
         auto& row=it->second;auto& s=row.sequence;
@@ -153,11 +175,18 @@ public:
             // neither send STOP nor leave a partially frozen set.
             auto frozen=rows_;
             for(auto& [key,item]:frozen)if(item.sequence.phase==P::registered) {
-                const auto* point=live_point(c,key);if(!point)return Result::target_pending;
-                const auto angles=fcs_calibrated_angles(point->world.east+c.installation.eff_position[1],
-                    point->world.north-c.installation.eff_position[0],point->world.up-c.installation.eff_position[2],
-                    c.installation.fcs_angle_offset_deg[0],c.installation.fcs_angle_offset_deg[1],c.installation.fcs_geometry);
-                item.sequence.pan=angles.azimuth;item.sequence.tilt=angles.elevation;
+                const auto* point=live_point(c,key);
+                if(!point) {
+                    if(missing_observation)*missing_observation=key;
+                    return Result::target_pending;
+                }
+                const auto vector=fcs_target_vector(point->world.east,point->world.north,point->world.up,
+                    c.installation.rdr_position,c.installation.eff_position,c.installation.fcs_geometry);
+                const auto angles=fcs_point_angles(vector[0],vector[1],vector[2],
+                    c.installation.fcs_angle_offset_deg[0],c.installation.fcs_angle_offset_deg[1]);
+                item.auto_pan=item.sequence.pan=angles.azimuth;
+                item.auto_tilt=item.sequence.tilt=angles.elevation;
+                item.photo_distance_m=std::hypot(vector[0],vector[1],vector[2]);
                 item.sequence.capture_reference=c2::rdr::sensor_to_base(c.rdr.targets.at(uint16_t(key)));
                 item.frozen=true;
             }
@@ -165,14 +194,15 @@ public:
             return perform(actions.stop,stop_error(c));
         }
         if(command==1203) {
-            if(current_==id&&(s.phase==P::aiming||s.phase==P::paused))return Result::success;
-            if(s.phase!=P::registered||phase_!=Phase::paused||!row.frozen)return Result::invalid_request;
-            if(current_||(c.fcs.status->flags&14))return Result::device_busy;
+            if(current_==id&&s.phase==P::aiming)return Result::success;
+            const bool reaim=current_==id&&s.phase==P::paused;
+            if((!reaim&&s.phase!=P::registered)||phase_!=Phase::paused||!row.frozen)return Result::invalid_request;
+            if((current_&&!reaim)||(c.fcs.status->flags&14))return Result::device_busy;
             if(!ManualSequence::stopped(c.rdr))return stop_error(c);
             if(aim_override) {
                 s.pan=aim_override->azimuth;
                 s.tilt=aim_override->elevation;
-            }
+            } else {s.pan=row.auto_pan;s.tilt=row.auto_tilt;}
             // Own the slot before issuing IO, including unknown/exception outcomes.
             current_=id;s.enter(P::aiming,c.now);
             return perform([&]{return actions.point(s.tilt,s.pan);},Result::device_error);
@@ -221,6 +251,7 @@ public:
     }
 private:
     std::map<uint32_t,Row> rows_;
+    std::vector<uint32_t> order_;
     Phase phase_{Phase::idle};
     uint32_t current_{};
     Clock::time_point began_{};
@@ -249,12 +280,9 @@ private:
         return c.rdr.thermal_warning()?Result::lidar_stop_warning_unconfirmed:Result::lidar_stop_unconfirmed;
     }
     static const c2::rdr::CorrectedTarget* live_point(const Context& c,uint32_t id) {
-        if(!c.scanning||c.rdr.lidar_inhibited||!c.rdr.reporting)return nullptr;
-        const auto raw=c.rdr.targets.find(uint16_t(id));
-        if(raw==c.rdr.targets.end()||c.rdr.excluded.contains(uint16_t(id))||
-           raw->second.track_state!=1||raw->second.detected!=1||
-           c.sample_now-raw->second.seen>3||raw->second.seen>c.sample_now)return nullptr;
-        for(const auto& p:c.points)if(p.id==id&&p.valid&&c2::rdr::gui_point(p.world))return &p;
+        if(!c.scanning)return nullptr;
+        for(const auto& p:c.points)if(p.id==id&&
+            c2::rdr::control_observation_ready(c.rdr,p,c.sample_now))return &p;
         return nullptr;
     }
     Result perform(const std::function<Result()>& action,Result exception_reason) {
