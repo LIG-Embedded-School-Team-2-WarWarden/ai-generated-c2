@@ -1000,7 +1000,6 @@ int main(int argc, char** argv) {
                             else if(manual.phase!=P::paused)result=gui::Result::invalid_request;
                             else if(!ManualSequence::stopped(real_rdr->snapshot())||!aligned||(flags&14))result=gui::Result::lidar_stop_unconfirmed;
                             else {
-                                // Existing EF05 capture command; legacy demo() wire API is unchanged.
                                 manual.enter(P::firing,Clock::now());manual.output_seen=false;
                                 const auto reply=client->demo();result=command_result("EF05_MANUAL",reply);
                                 if(result!=gui::Result::success)manual.fail(result);
