@@ -15,6 +15,7 @@ template<class Driver> class RdrControl {
     uint32_t command_{}, request_{};
     uint16_t previous_result_{};
     double gui_seen_{};
+    double sample_now_{};
     bool stopped_{}, heartbeat_seen_{};
     enum class StartPhase { none, reporting, starting };
     StartPhase start_phase_{StartPhase::none};
@@ -27,8 +28,9 @@ template<class Driver> class RdrControl {
     }
 public:
     RdrControl(Driver& driver, std::function<void(const std::string&)> log, double now)
-        : driver_(driver),log_(std::move(log)),gui_seen_(now) {}
+        : driver_(driver),log_(std::move(log)),gui_seen_(now),sample_now_(now) {}
     void tick(double now) {
+        sample_now_=now;
         driver_.tick();auto state=driver_.snapshot();
         if (start_phase_ != StartPhase::none) {
             if (!state.connected || state.generation != start_generation_ || state.last_result > 1)
@@ -85,6 +87,7 @@ public:
         return out;
     }
     c2::ipc::PipeResponse handle(const c2::ipc::PipeCommand& q,double now) {
+        sample_now_=now;
         c2::ipc::PipeResponse out;out.request_id=q.request_id;out.command=q.command;
         out.result=5;
         if(!q.request_id || q.rdr_id!=1)out.result=1;
@@ -134,8 +137,14 @@ public:
         for(const auto&t:targets) {
             if(p.target_count==c2::ipc::target_capacity)break;
             auto&v=p.targets[p.target_count++];v.id=t.id;v.rdr_id=1;
-            v.valid=p.rdr.operating && t.valid && t.status!=1;v.status=t.status==1?1:v.valid?0:t.status>=3?t.status:2;
-            if(t.status==1 || v.valid || (p.rdr.operating && (t.status==4 || t.status==5))) {
+            v.valid=p.rdr.operating&&t.status!=1&&
+                c2::rdr::control_observation_ready(state,t,sample_now_);
+            // Status 5 retains a display coordinate while waiting for a fresh
+            // observation.  Existing GUI v3 already renders it as non-assignable.
+            v.status=t.status==1?1:v.valid?0:
+                p.rdr.operating&&t.valid&&t.status==0?5:t.status>=3?t.status:2;
+            if(t.status==1 || (p.rdr.operating && t.valid) ||
+               (p.rdr.operating && (t.status==4 || t.status==5))) {
                 // GUI XYZ is exclusively world coordinates, never sensor/relative XYZ.
                 v.x=float(t.world.east);v.y=float(t.world.north);v.z=float(t.world.up);
                 // Target table uses north=0 degrees without the map's display offset.

@@ -148,11 +148,15 @@ def main():
             if args.filtered:
                 # Predictions expire after 1.5 s at the sender. Verify a
                 # filtered intermediate position, not convergence after expiry.
-                gui.wait(lambda frame: any(row[0] == 7 and row[9] and
+                # A prediction remains visible but is deliberately not valid
+                # for assignment/control until an OBSERVED sample returns.
+                gui.wait(lambda frame: any(row[0] == 7 and row[8:10] == (5, 0) and
                     3.01 < row[4] < 5.99 and 4.01 < row[5] < 6.99 and 2.01 < row[6] < 2.99
                     for row in target_records(frame)), timeout=1.3)
             else:
-                gui_xyz((6, 7, 3))
+                gui.wait(lambda frame: any(row[0] == 7 and row[8:10] == (5, 0) and
+                    all(abs(a-b) < 1e-5 for a, b in zip(row[4:7], (6, 7, 3)))
+                    for row in target_records(frame)))
             # Restoring real observations retains the display history and
             # allows convergence without extending the prediction lifetime.
             board.track_state = 1

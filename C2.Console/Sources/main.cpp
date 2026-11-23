@@ -6,6 +6,7 @@
 #include "lidar_interlock.hpp"
 #include "manual_sequence.hpp"
 #include "batch_sequence.hpp"
+#include "continuous_photo_sequence.hpp"
 #include "observation_retention.hpp"
 #include "rdr_startup.hpp"
 #include "rdr_live_diagnostics.hpp"
@@ -151,9 +152,21 @@ static nlohmann::json rdr_json(const c2::rdr::State& state,
     return {{"connected",state.connected},{"mode",state.mode},{"reporting",state.reporting},{"result",state.last_result},{"targets",targets}};
 }
 
+static void best_effort_fcs_off(fcs::Client* client) noexcept {
+    if(!client)return;
+    for(int attempt=0;attempt<3;++attempt) {
+        try {
+            const auto reply=client->laser(false);
+            if(reply&&reply->result==fcs::Result::accepted&&reply->laser_state==0)return;
+        } catch(...) {}
+        if(attempt<2)std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
 int main(int argc, char** argv) {
     void* ipc{};
     void* rdr_control{};
+    std::unique_ptr<fcs::Client> client;
     std::filesystem::path event_log_file;
     std::ofstream events;
     try {
@@ -168,6 +181,7 @@ int main(int argc, char** argv) {
         InstallationConfig installation;
         c2::rdr::TargetPositionFilterConfig position_filter_config;
         auto laser_deadline = Clock::time_point{};
+        bool calibration_laser_renewable{};
         unsigned rdr_port=1000, rdr_local_port=1000;
         std::string rdr_ip="192.168.0.101", rdr_local_ip;
         std::wstring ipc_suffix;
@@ -288,8 +302,6 @@ int main(int argc, char** argv) {
             installation_seen = std::filesystem::last_write_time(installation_file);
         }
         std::signal(SIGINT, quit); std::signal(SIGTERM, quit);
-        std::unique_ptr<fcs::Client> client;
-
         std::unique_ptr<c2::rdr::Client> real_rdr;
         if (!rdr_only) { client=std::make_unique<fcs::Client>(config); client->start(); }
         real_rdr=std::make_unique<c2::rdr::Client>(c2::UdpConfig{rdr_local_ip,uint16_t(rdr_local_port)},
@@ -352,11 +364,13 @@ int main(int argc, char** argv) {
         LidarInterlock lidar_interlock;
         ManualSequence manual;
         BatchSequence batch;
+        ContinuousPhotoSequence continuous_photos;
         RdrStartup rdr_startup;
         c2::rdr::ObservationRetention observation_retention;
         c2::rdr::HitRetention hit_retention;
         auto laser_off=[&]() {
             // Keep retrying even when an explicit CLI/GUI OFF fails or throws.
+            calibration_laser_renewable=false;
             laser_deadline=Clock::now()+std::chrono::seconds(1);
             auto reply=client->laser(false);
             lidar_interlock.off_reply(reply,Clock::now());
@@ -435,13 +449,21 @@ int main(int argc, char** argv) {
         bool thermal_output_stopped=false;
         Clock::time_point last_assignment_cancel{};
         Clock::time_point last_calibration_move{};
+        std::optional<std::pair<double,double>> last_calibration_goal; // pan, tilt
         InstallationConfig geometry_snapshot{};
         FcsGeometry geometry_pending{};
         uint32_t geometry_token{},geometry_parts{};
         Clock::time_point geometry_deadline{};
         const auto same_geometry_basis=[](const InstallationConfig& a,const InstallationConfig& b) {
-            return a.rdr_position==b.rdr_position && a.eff_position==b.eff_position &&
-                a.fcs_angle_offset_deg==b.fcs_angle_offset_deg && a.fcs_geometry==b.fcs_geometry;
+            return a.fcs_angle_offset_deg==b.fcs_angle_offset_deg && a.fcs_geometry==b.fcs_geometry;
+        };
+        const auto pointing_basis_changed=[](const InstallationConfig& before,const InstallationConfig& after) {
+            if(before.fcs_angle_offset_deg!=after.fcs_angle_offset_deg || before.fcs_geometry!=after.fcs_geometry)
+                return true;
+            // Without a measured RDR-local transform, the legacy formula still
+            // needs the configured RDR/FCS installation baseline.
+            return !after.fcs_geometry.enabled &&
+                (before.rdr_position!=after.rdr_position || before.eff_position!=after.eff_position);
         };
         Clock::time_point last_fcs_status_sample{};
         bool have_fcs_busy_sample{};
@@ -474,10 +496,10 @@ int main(int argc, char** argv) {
                         else if(command=="point")expected=4;
                         else if(command=="laser")expected=3;
                     }
-                    if((manual.active()||batch.active())&&((device=="fcs"&&command=="point")||
-                        (device=="fcs"&&command=="laser"&&words.back()=="on")||
+                    if((manual.active()||batch.active()||continuous_photos.holds_batch())&&((device=="fcs"&&command=="point")||
+                        (device=="fcs"&&command=="laser")||
                         (device=="rdr"&&command!="status"&&command!="targets"&&command!="live")))
-                        throw std::invalid_argument("Manual sequence owns devices; cancel it before independent control");
+                        throw std::invalid_argument("A sequence owns the devices; stop it before independent control");
                     if(!expected || words.size()!=expected)throw std::invalid_argument("invalid command or argument count");
                     if(device=="quit" || device=="exit")break;
                     if(device=="sequence"&&command=="confirm-hit") {
@@ -543,7 +565,7 @@ int main(int argc, char** argv) {
                 }catch(const std::exception& error){log(std::string("FCS OFF retry: ")+error.what());}
             }
             if (!c2_ipc_healthy(ipc) || !c2_ipc_healthy(rdr_control)) throw std::runtime_error("IPC stopped");
-            if (!installation_file.empty() && Clock::now() >= next_installation_check) {
+            if (!installation_file.empty() && !continuous_photos.holds_batch() && Clock::now() >= next_installation_check) {
                 next_installation_check = Clock::now()+std::chrono::milliseconds(500);
                 std::error_code error;
                 auto modified = std::filesystem::last_write_time(installation_file,error);
@@ -555,10 +577,11 @@ int main(int argc, char** argv) {
                     installation_seen = modified;
                     try {
                         auto updated = load_installation_settings(installation_file);
-                        if(updated.rdr_position!=installation.rdr_position || updated.eff_position!=installation.eff_position ||
-                            updated.fcs_angle_offset_deg!=installation.fcs_angle_offset_deg || updated.fcs_geometry!=installation.fcs_geometry)
+                        const bool rdr_position_changed=updated.rdr_position!=installation.rdr_position;
+                        if(pointing_basis_changed(installation,updated))
                             invalidate_installation_alignment();
                         installation = std::move(updated);
+                        if(rdr_position_changed)position_filter.reset();
                         log("display_config reloaded");
                     } catch (const std::exception& failure) {
                         log(std::string("display_config rejected; retaining last valid positions: ")+failure.what());
@@ -616,6 +639,10 @@ int main(int argc, char** argv) {
                     "; check device, then acknowledge fcs laser off before recovery":""));
             }
             const auto rdr_state=real_rdr->snapshot();
+            if(calibration_laser_renewable&&(!rdr_state.connected||!rdr_state.lidar_inhibited)) {
+                log("Calibration laser invariant lost; requesting immediate FCS OFF");
+                try{(void)laser_off();}catch(const std::exception& error){log(error.what());}
+            }
             if(rdr_state.thermal_fault()&&!thermal_output_stopped){
                 thermal_output_stopped=true;lidar_interlock.fail();
                 log("LIDAR thermal_protective_stop; requesting FCS OFF; automatic recovery disabled");
@@ -646,6 +673,16 @@ int main(int argc, char** argv) {
             bool current = state.connected && state.status &&
                 Clock::now()-state.status_received_at < std::chrono::seconds(2);
             uint16_t flags = current ? state.status->flags : 0;
+            if(last_calibration_goal) {
+                if(manual.active() || batch.active() || continuous_photos.holds_batch() || target_id)
+                    last_calibration_goal.reset();
+                else if(current && state.status_received_at>last_calibration_move) {
+                    const bool reached=fcs_pan_error(last_calibration_goal->first,state.status->azimuth)<=.15 &&
+                        std::abs(last_calibration_goal->second-state.status->elevation)<=.15;
+                    const bool grace=Clock::now()-last_calibration_move<std::chrono::seconds(1);
+                    if(reached || (!(flags&2) && !grace))last_calibration_goal.reset();
+                }
+            }
             if (!current) have_fcs_busy_sample = false;
             if (current && (!have_fcs_busy_sample || state.status_received_at != last_fcs_status_sample)) {
                 const bool busy = (flags & 10) != 0;
@@ -692,7 +729,33 @@ int main(int argc, char** argv) {
                     c2::rdr::seconds(),observation.scanning,manual.active()||target_id||rdr_startup.blocks_recovery(),
                     lidar_interlock.phase()==LidarInterlock::Phase::idle};
             };
-            {
+            auto continuous_photo_context=[&]() {
+                return ContinuousPhotoSequence::Context{state,batch.photo_pause_valid(batch_context()),Clock::now()};
+            };
+            auto continuous_photo_actions=[&]() {
+                ContinuousPhotoSequence::Actions actions;
+                actions.point=[&](double tilt,double pan) {
+                    next_poll={};
+                    return client?command_result("EF03_CONTINUOUS_PHOTO",client->point(tilt,pan)):
+                        gui::Result::asset_unavailable;
+                };
+                actions.capture=[&]() {
+                    if(!client)return gui::Result::asset_unavailable;
+                    const auto reply=client->laser(true);next_poll={};
+                    const auto result=command_result("EF04_CONTINUOUS_PHOTO",reply);
+                    return result==gui::Result::success&&reply->laser_state!=1?
+                        gui::Result::device_fault:result;
+                };
+                actions.off=[&]() {
+                    if(!client)return gui::Result::asset_unavailable;
+                    const auto reply=laser_off();next_poll={};last_assignment_cancel=Clock::now();
+                    const auto result=command_result("EF04_OFF_CONTINUOUS_PHOTO",reply);
+                    return result==gui::Result::success&&reply->laser_state!=0?
+                        gui::Result::fcs_off_unconfirmed:result;
+                };
+                return actions;
+            };
+            if(!continuous_photos.holds_batch()) {
                 const auto before=batch.phase();
                 std::map<uint32_t,unsigned> previous;
                 for(const auto& [id,row]:batch.rows())previous[id]=row.sequence.state();
@@ -710,6 +773,18 @@ int main(int argc, char** argv) {
                     try{(void)laser_off();}catch(const std::exception& e){log(e.what());}
                     next_poll={};
                 }
+            }
+            if(continuous_photos.holds_batch()) {
+                const auto before=continuous_photos.phase();
+                const auto confirmed=continuous_photos.confirmed();
+                auto actions=continuous_photo_actions();
+                try {continuous_photos.tick(continuous_photo_context(),actions);}
+                catch(const std::exception& error) {log(std::string("CONTINUOUS_PHOTO exception ")+error.what());}
+                if(before!=continuous_photos.phase()||confirmed!=continuous_photos.confirmed())
+                    log("CONTINUOUS_PHOTO phase="+std::to_string(unsigned(continuous_photos.phase()))+
+                        " confirmed="+std::to_string(continuous_photos.confirmed())+
+                        "/"+std::to_string(continuous_photos.total())+
+                        " reason="+result_name(continuous_photos.reason()));
             }
             auto assignment_details=[&](uint32_t inspected_target) {
                 const bool diagnostic_aligned=current && fcs_pan_error(state.status->azimuth,commanded_pan)<=1 &&
@@ -777,9 +852,35 @@ int main(int argc, char** argv) {
                 response.request_id = request.request_id; response.command = request.command; response.fcs_id=1;
                 const bool stop_manual_capture=request.command==uint32_t(gui::Command::stop_manual_capture);
                 const bool manual_command=(request.command>=1001&&request.command<=1009)||stop_manual_capture;
-                if(gui::is_batch_command(request.command)) {
+                if(gui::is_continuous_photo_command(request.command)) {
                     auto result=gui::Result::invalid_request;
-                    if(request.request_id&&request_ipc==ipc&&request.rdr_id==1&&request.fcs_id==1) {
+                    if(request.request_id&&request_ipc==ipc&&request.rdr_id==1&&request.fcs_id==1&&
+                       request.target_id==0&&request.position_x==0&&request.position_y==0&&request.position_z==0) {
+                        auto actions=continuous_photo_actions();
+                        if(request.command==uint32_t(gui::Command::start_continuous_photos))
+                            result=continuous_photos.start(batch.photo_targets(),installation.continuous_photo[0],
+                                unsigned(installation.continuous_photo[1]),continuous_photo_context(),actions);
+                        else if(request.command==uint32_t(gui::Command::get_continuous_photo_status))
+                            result=continuous_photos.phase()==ContinuousPhotoSequence::Phase::failed?
+                                continuous_photos.reason():gui::Result::success;
+                        else if(request.command==uint32_t(gui::Command::stop_continuous_photos))
+                            result=continuous_photos.stop(continuous_photo_context(),actions);
+                    }
+                    response.result=uint32_t(result);response.target_id=continuous_photos.total();
+                    response.assignment=uint32_t(continuous_photos.phase());response.active=continuous_photos.confirmed();
+                    response.connected=state.connected;
+                    c2_ipc_reply(request_ipc,&response,ticket);
+                    if(request.command!=uint32_t(gui::Command::get_continuous_photo_status))
+                        log("CONTINUOUS_PHOTO command="+std::to_string(request.command)+
+                            " phase="+std::to_string(response.assignment)+
+                            " confirmed="+std::to_string(response.active)+"/"+std::to_string(response.target_id)+
+                            " result="+result_name(result));
+                } else if(gui::is_batch_command(request.command)) {
+                    auto result=gui::Result::invalid_request;
+                    const char* reject_reason="invalid_request_header";
+                    uint32_t missing_observation=0;
+                    if(request.request_id&&request_ipc==ipc&&request.rdr_id==1&&request.fcs_id==1&&
+                       (!continuous_photos.holds_batch()||request.command==uint32_t(gui::Command::get_batch_status))) {
                         BatchSequence::Actions actions;
                         actions.stop=[&]() {
                             if(!lidar_interlock.begin(real_rdr->snapshot(),Clock::now()))return gui::Result::lidar_recovery_required;
@@ -806,10 +907,20 @@ int main(int argc, char** argv) {
                             std::optional<FcsPointAngles> aim_override;
                             if(request.command==uint32_t(gui::Command::aim_batch_target))
                                 aim_override=gui_fcs_point_override(request.position_x,request.position_y,request.position_z);
-                            result=batch.command(request.command,request.target_id,batch_context(),actions,aim_override);
+                            result=batch.command(request.command,request.target_id,batch_context(),actions,
+                                aim_override,&missing_observation);
+                            reject_reason=result==gui::Result::invalid_request?"unspecified":result_name(result);
                         }
-                        catch(const std::invalid_argument& error){result=gui::Result::invalid_request;log(error.what());}
-                        catch(const std::exception& error){result=gui::Result::device_error;log(error.what());}
+                        catch(const std::invalid_argument& error){
+                            result=gui::Result::invalid_request;
+                            reject_reason="invalid_argument";
+                            log("BATCH exception request_id="+std::to_string(request.request_id)+" "+error.what());
+                        }
+                        catch(const std::exception& error){
+                            result=gui::Result::device_error;
+                            reject_reason="exception";
+                            log("BATCH exception request_id="+std::to_string(request.request_id)+" "+error.what());
+                        }
                     }
                     response.result=uint32_t(result);response.target_id=request.target_id;
                     response.assignment=batch.state(request.target_id);response.active=batch.flags(batch_context());
@@ -818,7 +929,10 @@ int main(int argc, char** argv) {
                     if(request.command!=1200)log("BATCH command="+std::to_string(request.command)+
                         " request_id="+std::to_string(request.request_id)+" target="+std::to_string(request.target_id)+
                         " state="+std::to_string(response.assignment)+" flags="+std::to_string(response.active)+
-                        " result="+result_name(result)+" reason="+result_name(batch.reason(request.target_id)));
+                        " result="+result_name(result)+
+                        (result==gui::Result::success?std::string{}:" reject_reason="+std::string(reject_reason))+
+                        " sequence_reason="+result_name(batch.reason(request.target_id))+
+                        (missing_observation?" missing_observation_target="+std::to_string(missing_observation):""));
                 } else if(request.command==uint32_t(gui::Command::get_rdr_sensor_health)) {
                     const auto h=real_rdr->snapshot();response.connected=h.connected;
                     response.target_id=255;
@@ -848,7 +962,7 @@ int main(int argc, char** argv) {
                     }
                     c2_ipc_reply(request_ipc,&response,ticket);
                 } else if (real_control && request.command>=10 && request.command<1000 && request.command!=18) {
-                    if((manual.active()||batch.active())&&request.command>=10&&request.command<=16) {
+                    if((manual.active()||batch.active()||continuous_photos.holds_batch())&&request.command>=10&&request.command<=16) {
                         response.result=uint32_t(gui::Result::device_busy);
                         response.target_id=manual.target;response.assignment=manual.state();response.connected=rdr_state.connected;
                     } else response=real_control->handle(request,c2::rdr::seconds());
@@ -860,7 +974,7 @@ int main(int argc, char** argv) {
                 bool geometry_enabled{};
                 try {
                     if (!request.request_id) result=gui::Result::invalid_request;
-                    else if(batch.active()&&(request.command==1||request.command==2||request.command==3||
+                    else if((batch.active()||continuous_photos.holds_batch())&&(request.command==1||request.command==2||request.command==3||
                         request.command==5||request.command==6||request.command==9||
                         manual_command))result=gui::Result::device_busy;
                     else if(request.command>=1110 && request.command<=1114) {
@@ -873,7 +987,7 @@ int main(int argc, char** argv) {
                         else if(request.command==1111) {
                             geometry_values=geometry_snapshot.fcs_geometry.rotation;geometry_enabled=geometry_snapshot.fcs_geometry.enabled;
                         } else if(!same_geometry_basis(installation,geometry_snapshot))result=gui::Result::target_changed;
-                        else if(manual.active() || batch.active() || target_id || (flags&14) || lidar_interlock.phase()!=LidarInterlock::Phase::idle)
+                        else if(manual.active() || batch.active() || continuous_photos.holds_batch() || target_id || (flags&14) || lidar_interlock.phase()!=LidarInterlock::Phase::idle)
                             result=gui::Result::device_busy;
                         else if(!current || !ready)result=gui::Result::asset_unavailable;
                         else if(request.command==1112) {
@@ -901,25 +1015,94 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
-                    else if(request.command>=1100 && request.command<=1102) {
-                        // Calibration uses only EF03 positioning, never capture/output commands.
-                        if(request_ipc!=ipc || request.rdr_id!=1 || request.fcs_id!=1)
+                    else if(request.command>=1100 && request.command<=1104) {
+                        const bool calibration_laser=request.command==1103 || request.command==1104;
+                        const bool zero_calibration_laser_request=!request.target_id && request.position_x==0 &&
+                            request.position_y==0 && request.position_z==0;
+                        const bool calibration_laser_renewal=request.command==1103 &&
+                            calibration_laser_renewable && laser_deadline!=Clock::time_point{} &&
+                            Clock::now()<laser_deadline && lidar_interlock.phase()==LidarInterlock::Phase::held &&
+                            rdr_state.connected && rdr_state.lidar_inhibited;
+                        if(request_ipc!=ipc || request.rdr_id!=1 || request.fcs_id!=1 ||
+                            (calibration_laser && !zero_calibration_laser_request))
                             result=gui::Result::invalid_request;
+                        // OFF is deliberately independent of assignments, device status freshness and
+                        // interlock phase. It is the idempotent recovery path for an unknown ON outcome.
+                        else if(request.command==1104) {
+                            if(!client)result=gui::Result::asset_unavailable;
+                            else {
+                                auto reply=laser_off();next_poll={};
+                                result=command_result("EF04_OFF_CALIBRATION",reply);
+                                if(result==gui::Result::success&&reply->laser_state!=0)
+                                    result=gui::Result::fcs_off_unconfirmed;
+                            }
+                        }
                         else if(!client || !current || !ready) result=gui::Result::asset_unavailable;
-                        else if(state.status_received_at<=last_calibration_move) result=gui::Result::status_pending;
-                        else if(manual.active() || batch.active() || target_id || (flags&14) ||
-                            lidar_interlock.phase()!=LidarInterlock::Phase::idle)
+                        else if(state.status_received_at<=last_calibration_move &&
+                            (request.command!=1100 || !last_calibration_goal))
+                            result=gui::Result::status_pending;
+                        else if(manual.active() || batch.active() || continuous_photos.holds_batch() || target_id ||
+                            (flags&(calibration_laser_renewal?10:request.command==1100?12:14)) ||
+                            (!calibration_laser_renewal&&lidar_interlock.phase()!=LidarInterlock::Phase::idle))
                             result=gui::Result::device_busy;
+                        else if(request.command==1103) {
+                            if(!calibration_laser_renewal&&!prepare_output())result=output_block_result;
+                            else {
+                                // A calibration indication is a bounded pulse, never a latched output.
+                                // Repeating this command only renews a pulse owned by calibration;
+                                // every renewal retains the same five-second fail-safe deadline.
+                                calibration_laser_renewable=true;
+                                laser_deadline=Clock::now()+std::chrono::seconds(5);
+                                try {
+                                    auto reply=client->laser(true);next_poll={};
+                                    result=command_result("EF04_CALIBRATION_PULSE",reply);
+                                    if(result==gui::Result::success&&reply->laser_state!=1)
+                                        result=gui::Result::device_fault;
+                                    if(result!=gui::Result::success) {
+                                        try{(void)laser_off();}catch(const std::exception& error){
+                                            log(std::string("Calibration laser cleanup: ")+error.what());
+                                        }
+                                    }
+                                } catch(...) {
+                                    try{(void)laser_off();}catch(const std::exception& error){
+                                        log(std::string("Calibration laser cleanup: ")+error.what());
+                                    }
+                                    throw;
+                                }
+                            }
+                        }
                         else if(request.command==1100) {
                             const double pan=request.position_x, tilt=request.position_y;
+                            const double point_pan=std::fmod(std::round(pan*10)/10+360.,360.);
+                            const double point_tilt=std::round(tilt*10)/10;
+                            const double base_pan=last_calibration_goal?last_calibration_goal->first:state.status->azimuth;
+                            const double base_tilt=last_calibration_goal?last_calibration_goal->second:state.status->elevation;
                             if(request.target_id || !std::isfinite(pan) || !std::isfinite(tilt) ||
                                 request.position_z!=0 || pan<0 || pan>=360 || tilt< -30 || tilt>90 ||
-                                fcs_pan_error(pan,state.status->azimuth)>30.01 ||
-                                std::abs(tilt-state.status->elevation)>30.01)
+                                fcs_pan_error(point_pan,base_pan)>30.01 ||
+                                std::abs(point_tilt-base_tilt)>30.01)
                                 result=gui::Result::invalid_request;
-                            else { result=command_result("EF03_CALIBRATION",client->point(
-                                    std::round(tilt*10)/10,std::fmod(std::round(pan*10)/10,360.)));
-                                last_calibration_move=Clock::now(); next_poll={}; }
+                            else {
+                                std::optional<fcs::Packet> reply;
+                                try { reply=client->point(point_tilt,point_pan); }
+                                catch(...) {
+                                    last_calibration_goal.reset();
+                                    last_calibration_move=Clock::now();
+                                    next_poll={};
+                                    throw;
+                                }
+                                result=command_result("EF03_CALIBRATION",reply);
+                                if(result==gui::Result::success) {
+                                    last_calibration_goal=std::pair{point_pan,point_tilt};
+                                    last_calibration_move=Clock::now();
+                                } else if(!reply) {
+                                    // The device may have accepted an EF03 whose reply was lost.
+                                    // Discard the goal chain until a newer status establishes reality.
+                                    last_calibration_goal.reset();
+                                    last_calibration_move=Clock::now();
+                                }
+                                next_poll={};
+                            }
                         } else if(request.command==1102) {
                             if(request.target_id) result=gui::Result::invalid_request;
                             else calibration_angles={state.status->elevation,state.status->azimuth};
@@ -928,8 +1111,11 @@ int main(int argc, char** argv) {
                                 [&](const Target& t){return t.id==request.target_id;});
                             if(!request.target_id || !observation.scanning || !observation.streaming ||
                                 found==observation.targets.end()) result=gui::Result::target_pending;
-                            else calibration_angles=fcs_point_angles(found->east+installation.eff_position[1],
-                                found->north-installation.eff_position[0],found->up-installation.eff_position[2]);
+                            else {
+                                last_calibration_goal.reset();
+                                calibration_angles=fcs_point_angles(found->east+installation.eff_position[1],
+                                    found->north-installation.eff_position[0],found->up-installation.eff_position[2]);
+                            }
                         }
                     }
                     else if(manual_command) {
@@ -966,14 +1152,15 @@ int main(int argc, char** argv) {
                             }
                         } else if(!manual.active()||manual.target!=request.target_id)result=gui::Result::not_assigned;
                         else if(request.command==1003) {
-                            if(manual.phase==P::aiming||manual.phase==P::aimed){}
-                            else if(manual.phase!=P::registered)result=gui::Result::invalid_request;
+                            if(manual.phase==P::aiming){}
+                            else if(manual.phase!=P::registered&&manual.phase!=P::aimed)result=gui::Result::invalid_request;
                             else if(assigned_now==observation.targets.end()||!observation.scanning||!observation.streaming||
                                 rdr_state.lidar_inhibited||(flags&14))result=gui::Result::target_pending;
                             else {
                                 const auto aim_override=gui_fcs_point_override(request.position_x,request.position_y,request.position_z);
-                                const auto angles=aim_override?*aim_override:fcs_calibrated_angles(assigned_now->east+installation.eff_position[1],
-                                    assigned_now->north-installation.eff_position[0],assigned_now->up-installation.eff_position[2],
+                                const auto angles=aim_override?*aim_override:fcs_target_angles(
+                                    assigned_now->east,assigned_now->north,assigned_now->up,
+                                    installation.rdr_position,installation.eff_position,
                                     installation.fcs_angle_offset_deg[0],installation.fcs_angle_offset_deg[1],installation.fcs_geometry);
                                 manual.pan=commanded_pan=angles.azimuth;manual.tilt=commanded_tilt=angles.elevation;
                                 auto reply=client->point(commanded_tilt,commanded_pan);
@@ -1039,25 +1226,25 @@ int main(int argc, char** argv) {
                                 manual.result_started=false;manual.recovery_requested=false;active=0;}
                         }
                     }
-                    else if(manual.active()&&(request.command==1||request.command==3||request.command==5||
+                    else if((manual.active()||continuous_photos.holds_batch())&&(request.command==1||request.command==3||request.command==5||
                             request.command==6||request.command==9))result=gui::Result::device_busy;
                     else if(request.command==18) {
                         result=request.rdr_id==1&&request.fcs_id==1?rdr_startup.result:gui::Result::invalid_request;
                     }
                     else if (request.command == 8 || request.command == 9) {
-                        if (request.rdr_id || request.fcs_id || request.target_id<2 || request.target_id>4)
+                        if (request.rdr_id || request.fcs_id || request.target_id<2 || request.target_id>5)
                             throw std::invalid_argument("Invalid camera settings group");
                         if (request.command==9) {
                             // Merge with disk to preserve unrelated settings and edits.
                             auto saved=load_installation_settings(installation_file,standalone_installation);
                             auto& triple=request.target_id==2?saved.ranges:
-                                request.target_id==3?saved.rdr_fov:saved.fcs_angle_offset_deg;
+                                request.target_id==3?saved.rdr_fov:
+                                request.target_id==4?saved.fcs_angle_offset_deg:saved.continuous_photo;
                             triple={request.position_x,request.position_y,request.position_z};
                             validate_camera_settings(saved);
                             save_installation_settings(installation_file,saved,standalone_installation);
                             const bool rdr_changed=installation.rdr_position!=saved.rdr_position;
-                            if(rdr_changed || installation.eff_position!=saved.eff_position ||
-                                installation.fcs_angle_offset_deg!=saved.fcs_angle_offset_deg || installation.fcs_geometry!=saved.fcs_geometry)
+                            if(pointing_basis_changed(installation,saved))
                                 invalidate_installation_alignment();
                             installation=saved;
                             if(rdr_changed) {
@@ -1083,7 +1270,6 @@ int main(int argc, char** argv) {
                             // GUI (right,forward,up) -> installation (forward,left,up).
                             const std::array<double,3> updated{request.position_y,-double(request.position_x),request.position_z};
                             auto saved = load_installation_settings(installation_file, standalone_installation);
-                            if((rdr_position?saved.rdr_position:saved.eff_position)!=updated)saved.fcs_geometry.enabled=false;
                             (rdr_position?saved.rdr_position:saved.eff_position) = updated;
                             save_installation_settings(installation_file, saved, standalone_installation);
                             std::error_code timestamp_error;
@@ -1091,9 +1277,10 @@ int main(int argc, char** argv) {
                             installation_missing = false;
                             installation.fcs_geometry=saved.fcs_geometry;
                             if (position!=updated) {
-                                invalidate_installation_alignment();
+                                if(!saved.fcs_geometry.enabled)invalidate_installation_alignment();
                                 position=updated;
                                 if (rdr_position) {
+                                    position_filter.reset();
                                     const auto calibrated=installation.rdr_position;
                                     corrected_targets=c2::rdr::correct_targets(rdr_state,
                                         {-calibrated[1],calibrated[0],calibrated[2]});
@@ -1151,16 +1338,16 @@ int main(int argc, char** argv) {
                         else if (found==observation.targets.end()) result=gui::Result::target_pending;
                         else if (target_id && (target_id!=request.target_id || assignment!=3 || demo_requested)) result=gui::Result::already_assigned;
                         else {
-                            // Consume the shared filtered world point before GUI serialization.
-                            const double east=found->east+installation.eff_position[1];
-                            const double north=found->north-installation.eff_position[0];
-                            const double up=found->up-installation.eff_position[2];
-                            const auto angles=fcs_calibrated_angles(east,north,up,
-                                installation.fcs_angle_offset_deg[0],installation.fcs_angle_offset_deg[1],installation.fcs_geometry);
+                            // With a measured 3D transform, point from RDR-local
+                            // coordinates. Absolute map installation affects only display.
+                            const auto vector=fcs_target_vector(found->east,found->north,found->up,
+                                installation.rdr_position,installation.eff_position,installation.fcs_geometry);
+                            const auto angles=fcs_point_angles(vector[0],vector[1],vector[2],
+                                installation.fcs_angle_offset_deg[0],installation.fcs_angle_offset_deg[1]);
                             commanded_pan=angles.azimuth;commanded_tilt=angles.elevation;
                             log("FCS point target="+std::to_string(request.target_id)+
                                 " corrected_xyz="+std::to_string(found->east)+","+std::to_string(found->north)+","+std::to_string(found->up)+
-                                " relative_xyz="+std::to_string(east)+","+std::to_string(north)+","+std::to_string(up)+
+                                " aim_vector="+std::to_string(vector[0])+","+std::to_string(vector[1])+","+std::to_string(vector[2])+
                                 " pan="+std::to_string(commanded_pan)+" tilt="+std::to_string(commanded_tilt));
                             auto reply=client->point(commanded_tilt,commanded_pan);
                             result=command_result("EF03",reply);
@@ -1212,7 +1399,8 @@ int main(int argc, char** argv) {
                 }
                 if (request.command==8 && result==gui::Result::success) {
                     const auto& values=request.target_id==2?installation.ranges:
-                        request.target_id==3?installation.rdr_fov:installation.fcs_angle_offset_deg;
+                        request.target_id==3?installation.rdr_fov:
+                        request.target_id==4?installation.fcs_angle_offset_deg:installation.continuous_photo;
                     response.fcs_id=std::bit_cast<uint32_t>(float(values[0]));
                     response.target_id=std::bit_cast<uint32_t>(float(values[1]));
                     response.assignment=std::bit_cast<uint32_t>(float(values[2]));
@@ -1312,6 +1500,9 @@ int main(int argc, char** argv) {
             const auto loop_wakeup = Clock::now()+std::chrono::milliseconds(50);
             std::this_thread::sleep_until(client ? std::min(loop_wakeup,next_poll) : loop_wakeup);
         }
+        // Remove any bounded calibration/output pulse before waiting for RDR shutdown.
+        // Repeat below because OFF is idempotent and the first reply may be lost.
+        best_effort_fcs_off(client.get());
         if (real_rdr && real_rdr->snapshot().connected) {
             real_rdr->command(0xED06,0);
             const auto deadline=c2::rdr::seconds()+6;
@@ -1321,12 +1512,15 @@ int main(int argc, char** argv) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
         }
-        if(client && client->snapshot().connected) { try { (void)client->laser(false); } catch(...) {} }
+        best_effort_fcs_off(client.get());
         log("runtime_stop graceful=1");
         c2_ipc_destroy(rdr_control); rdr_control=nullptr;
         c2_ipc_destroy(ipc); ipc=nullptr; if (client) client->stop();
         return 0;
     } catch(const std::exception& error) {
+        // A main-loop failure must not leave a previously accepted EF04 pulse latched.
+        best_effort_fcs_off(client.get());
+        if(client) { try { client->stop(); } catch(...) {} }
         if (rdr_control) c2_ipc_destroy(rdr_control);
         if (ipc) c2_ipc_destroy(ipc);
         if(events) events<<unix_ms()<<" runtime_error "<<error.what()<<std::endl;

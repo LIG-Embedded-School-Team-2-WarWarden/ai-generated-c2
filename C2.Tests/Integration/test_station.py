@@ -366,12 +366,14 @@ def main():
             assert all(abs(a-b)<1e-6 for a,b in zip(target[4:7], (.469,2.229,-.109)))
             rdr.track_state = 2
             wait('rdr targets', lambda rows: all(t['track_state'] == 2 for t in rows))
-            frame = gui.wait(lambda raw: len(target_records(raw)) == 2 and valid_count(raw) == 2)
+            frame = gui.wait(lambda raw: len(target_records(raw)) == 2 and
+                all(t[8:10] == (5, 0) for t in target_records(raw)))
             target = next(t for t in target_records(frame) if t[0] == 7)
-            assert target[8:10] == (0, 1)
+            assert target[8:10] == (5, 0)
             assert all(abs(a-b)<1e-6 for a,b in zip(target[4:7], (.469,2.229,-.109)))
             rdr.track_state = 0
-            frame = gui.wait(lambda raw: valid_count(raw) == 0)
+            frame = gui.wait(lambda raw: len(target_records(raw)) == 2 and
+                all(t[8:10] == (2, 0) for t in target_records(raw)))
             assert {t[0] for t in target_records(frame)} == {7, 19}
             assert all(t[4:7] == (0, 0, 0) for t in target_records(frame))
             rdr.track_state = 1

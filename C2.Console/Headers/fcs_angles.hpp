@@ -26,10 +26,12 @@ inline float fcs_motor_to_gui_azimuth(double motor) {
 }
 inline std::optional<FcsPointAngles> gui_fcs_point_override(double azimuth, double elevation, double reserved) {
     if (!std::isfinite(azimuth) || azimuth < 0 || azimuth >= 360 ||
-        !std::isfinite(elevation) || elevation < 0 || elevation > 90 || reserved != 0)
+        !std::isfinite(elevation) || elevation < -30 || elevation > 90 ||
+        (reserved != 0 && reserved != 1))
         throw std::invalid_argument("invalid GUI camera angles");
-    // Older pipe v3 clients send three zeroes for the same command.
-    if (azimuth == 0 && elevation == 0) return std::nullopt;
+    // Marker 1 means an explicit operator override, including the valid 0/0
+    // angle. Older pipe v3 clients send three zeroes for ECS automatic aim.
+    if (reserved == 0 && azimuth == 0 && elevation == 0) return std::nullopt;
     const double motor_azimuth = std::fmod(std::round((azimuth + 45) * 10) / 10, 360.);
     return FcsPointAngles{std::round(elevation * 10) / 10, motor_azimuth};
 }

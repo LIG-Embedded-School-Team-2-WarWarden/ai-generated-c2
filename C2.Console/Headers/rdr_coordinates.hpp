@@ -16,6 +16,18 @@ struct CorrectedTarget {
     BasePoint relative{}, world{}; // RDR-relative and WORLD (east,north,up), metres.
     bool valid{};
 };
+// A finite coordinate can still be a sender prediction.  Keep that coordinate
+// available for display, but authorize control only from a recent OBSERVED
+// sample.  Both GUI publication and command validation use this predicate so
+// an ALIVE row cannot disagree with the assignment gate.
+inline bool control_observation_ready(const State& state,const CorrectedTarget& point,double now) {
+    if(!state.connected||state.mode!=2||!state.reporting||state.lidar_inhibited||
+       !point.valid||!std::isfinite(now))return false;
+    const auto raw=state.targets.find(point.id);
+    return raw!=state.targets.end()&&!state.excluded.contains(point.id)&&
+        raw->second.track_state==1&&raw->second.detected==1&&
+        raw->second.seen<=now&&now-raw->second.seen<=3;
+}
 inline bool gui_point(const BasePoint& point) {
     const double limit = std::numeric_limits<float>::max();
     for (auto value : {point.east, point.north, point.up,

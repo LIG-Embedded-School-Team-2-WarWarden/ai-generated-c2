@@ -44,9 +44,12 @@ enum class Command : std::uint32_t {
     // resume available=2, positioning slot free=4, FCS ready=8.
     get_batch_status=1200, register_batch_target=1201, cancel_batch_target=1202,
     aim_batch_target=1203, pause_batch_scan=1204, fire_batch_target=1205,
-    resume_batch_scan=1206, retry_batch_target=1207, stop_batch_capture=1208
+    resume_batch_scan=1206, retry_batch_target=1207, stop_batch_capture=1208,
+    start_continuous_photos=1210, get_continuous_photo_status=1211,
+    stop_continuous_photos=1212
 };
 constexpr bool is_batch_command(std::uint32_t command) { return command>=1200 && command<=1208; }
+constexpr bool is_continuous_photo_command(std::uint32_t command) { return command>=1210 && command<=1212; }
 enum class Result : std::uint32_t {
     success, invalid_request, asset_unavailable, not_assigned,
     already_assigned, not_supported, device_error,
@@ -94,6 +97,8 @@ struct Frame { FrameHeader header{}; Payload payload{}; };
 struct PipeCommand {
     std::uint32_t magic{pipe_magic}, version{pipe_version}, command{}, request_id{};
     std::uint32_t rdr_id{}, fcs_id{}, target_id{};
+    // Aim commands: x/y are operator absolute GUI PAN/TILT and z=1 marks the
+    // override. All zeroes request ECS automatic target + zero/3D calibration.
     float position_x{}, position_y{}, position_z{};
 };
 struct PipeResponse {

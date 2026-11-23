@@ -66,6 +66,19 @@ def run(exe):
                         gui.command(0)
                         return gui.last_response[7] == (103 if manual else 2)
                     wait_for(aligned)
+                    if manual:
+                        # An already-aimed row can be corrected immediately. Marker 1
+                        # identifies the GUI values as an operator absolute override.
+                        count = len(board.points)
+                        result = gui.command(1003,target=target,xyz=(135,10,1))
+                        assert result==0,(result,gui.last_response,(runtime/"events.log").read_text(errors="replace")[-4000:])
+                        assert len(board.points)==count+1 and board.points[-1]==(100,1800)
+                        wait_for(aligned)
+                        count = len(board.points)
+                        result = gui.command(1003,target=target)
+                        assert result==0,(result,gui.last_response)
+                        assert len(board.points)==count+1 and board.points[-1]==expected
+                        wait_for(aligned)
 
                 for offsets in [(2.5,-3.5,0),(2.5,-3.5,0),(-4,5,0),(0,0,0)]:
                     count=len(board.points)
@@ -90,7 +103,7 @@ def run(exe):
                 assert len(board.points)==count
                 assert gui.command(8,target=1,rdr=0,fcs=0)==1
             assert board.error is None,board.error
-        print('PASS: normal/manual angles, actual installation position, no target shift, repeated save/reset, alignment, busy rejection, reload, no motion on save')
+        print('PASS: automatic zero offsets, manual absolute correction/re-aim/reset, installation position, repeated save/reset, alignment, busy rejection, reload')
     finally:
         board.close()
 
