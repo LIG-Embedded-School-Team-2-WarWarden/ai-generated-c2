@@ -81,42 +81,61 @@ int manual_sequence_entry() {
     m.tick(r,f,false,later,3600);check(m.phase==P::observing);
     f.status_received_at=later+std::chrono::seconds(3);
     m.tick(r,f,false,f.status_received_at,3603);
-    check(m.phase==P::hit&&m.state()==108&&m.reason==R::success&&m.completed_step()==8);
-
-    // A fresh observation of the original ID still confirms ALIVE immediately.
-    M same_id;same_id.target=7;same_id.generation=1;same_id.resume_sample=3600;
-    same_id.capture_reference=c2::rdr::BasePoint{};same_id.enter(P::observing,later);
-    c2::rdr::Target other;other.id=7;other.seen=3601;other.track_state=other.detected=1;
-    other.status=0;other.pan=1800;other.tilt=0;r.targets[7]=other;
-    f.status_received_at=later+std::chrono::seconds(1);
-    same_id.tick(r,f,false,f.status_received_at,3601);
-    check(same_id.phase==P::alive&&same_id.state()==111);
-
-    // A changed ID must still provide two nearby observations before the HIT deadline.
-    M replacement;replacement.target=7;replacement.generation=1;replacement.resume_sample=3600;
-    replacement.capture_reference=c2::rdr::BasePoint{};replacement.enter(P::observing,later);
-    r.targets.clear();other.id=99;other.x=.01;other.seen=3601;r.targets[99]=other;
-    replacement.tick(r,f,false,f.status_received_at,3601);
-    check(replacement.phase==P::observing);
-    r.targets[99].seen=3602;f.status_received_at=later+std::chrono::seconds(2);
-    replacement.tick(r,f,false,f.status_received_at,3602);
-    check(replacement.phase==P::alive&&replacement.state()==111);
-
-    // Device and session failures remain failures; only clean absence becomes HIT.
-    M disconnected;disconnected.target=7;disconnected.generation=1;disconnected.resume_sample=3600;
-    disconnected.enter(P::observing,later);r.targets.clear();r.connected=false;
-    disconnected.tick(r,f,false,f.status_received_at,3602);
+    check(m.reason==R::result_unconfirmed&&m.completed_step()==7);
+    // Confirmed completion does not make absence evidence of HIT.
+    m.capture_reference=c2::rdr::BasePoint{};m.output_seen=true;
+    r.lidar_known=r.lidar_on=true;m.enter(P::observing,later);
+    auto replacement=m, disconnected=m, no_capture=m;
+    m.tick(r,f,false,f.status_received_at,3603);
+    check(m.phase==P::failed&&m.state()==3&&m.reason==R::result_unconfirmed);
+    no_capture.output_seen=false;no_capture.tick(r,f,false,f.status_received_at,3603);
+    check(no_capture.reason==R::result_unconfirmed);
+    r.connected=false;disconnected.tick(r,f,false,f.status_received_at,3603);
     check(disconnected.reason==R::lidar_disconnected);r.connected=true;
-    M device_fault;device_fault.target=7;device_fault.generation=1;device_fault.resume_sample=3600;
-    device_fault.enter(P::observing,later);f.status->flags=17;
-    device_fault.tick(r,f,false,f.status_received_at,3602);
-    check(device_fault.reason==R::device_fault);f.status->flags=1;
-
-    M absent;absent.target=7;absent.generation=1;absent.resume_sample=3600;
-    absent.capture_reference=c2::rdr::BasePoint{};absent.enter(P::observing,later);
-    f.status_received_at=later+std::chrono::seconds(3);
-    absent.tick(r,f,false,f.status_received_at,3603);
-    check(absent.phase==P::hit&&absent.state()==108&&absent.reason==R::success);
+    c2::rdr::Target other;other.id=99;other.seen=3601;other.track_state=other.detected=1;
+    other.status=0;other.pan=1800;other.tilt=0;
+    r.targets[99]=other;replacement.tick(r,f,false,f.status_received_at,3603);
+    check(replacement.reason==R::result_unconfirmed);
+    r.targets[99].seen=3603.1;f.status_received_at=later+std::chrono::milliseconds(3100);
+    replacement.tick(r,f,false,f.status_received_at,3603.1);
+    check(replacement.phase==P::alive);r.targets.clear();
+    { // 2026-11-17: first new ID arrives 245 ms after the old HIT deadline.
+        M late;late.target=5;late.generation=1;late.resume_sample=100;late.result_started=true;
+        late.output_seen=true;late.capture_reference=c2::rdr::BasePoint{};late.enter(P::observing,start);
+        auto step=[&](M& s,double elapsed) {
+            f.status_received_at=start+std::chrono::duration_cast<M::Clock::duration>(std::chrono::duration<double>(elapsed));
+            s.tick(r,f,false,f.status_received_at,100+elapsed);
+        };
+        step(late,3);check(late.reason==R::result_unconfirmed&&late.completed_step()==7);
+        auto no_data=late,expired=late,session_changed=late,ambiguous=late,predicted=late;
+        auto excluded=late,far=late,stale_result=late,same_id=late,device_fault=late;
+        other.id=6;other.x=.01;other.seen=103.245;r.targets[6]=other;
+        step(late,3.245);check(late.reason==R::result_unconfirmed);
+        step(late,3.4);check(late.reason==R::result_unconfirmed); // same packet
+        r.targets[6].seen=104.4;step(late,4.4);check(late.phase==P::alive&&late.state()==111);
+        r.targets[6].track_state=2;r.targets[6].detected=0;
+        step(predicted,4.4);check(predicted.reason==R::result_unconfirmed);
+        r.targets[6]=other;r.targets[7]=other;r.targets[7].id=7;
+        step(ambiguous,3.245);r.targets[6].seen=r.targets[7].seen=104.4;
+        step(ambiguous,4.4);check(ambiguous.reason==R::result_unconfirmed);
+        r.targets.erase(7);r.excluded.insert(6);
+        step(excluded,4.4);check(excluded.reason==R::result_unconfirmed);r.excluded.clear();
+        r.targets[6].x=.2;step(far,4.4);r.targets[6].seen=104.5;step(far,4.5);
+        check(far.reason==R::result_unconfirmed);
+        r.targets[6]=other;step(stale_result,7);check(stale_result.reason==R::result_unconfirmed);
+        r.targets.clear();other.id=5;other.seen=104.5;r.targets[5]=other;
+        step(same_id,4.5);check(same_id.phase==P::alive);
+        f.status->flags=17;step(device_fault,4.5);check(device_fault.reason==R::device_fault);f.status->flags=1;
+        r.targets.clear();other.id=6;r.targets[6]=other;
+        r.targets.erase(7);r.targets[6].seen=113.1;step(expired,13.1);
+        check(expired.reason==R::result_unconfirmed);
+        ++r.generation;step(session_changed,4.4);check(session_changed.reason==R::lidar_disconnected);--r.generation;
+        r.targets.clear();step(no_data,13);check(no_data.reason==R::result_unconfirmed);
+        step(no_data,60);check(no_data.reason==R::result_unconfirmed&&no_data.state()!=108);
+        r.targets.clear();
+        auto stalled=no_data;stalled.enter(P::observing,start);step(stalled,60);
+        check(stalled.reason==R::result_unconfirmed&&stalled.state()==3);
+    }
     M wrapped;wrapped.generation=1;wrapped.pan=.1;wrapped.tilt=0;
     wrapped.enter(P::aiming,later);f.status->azimuth=359.9;
     f.status_received_at=later+std::chrono::milliseconds(100);
