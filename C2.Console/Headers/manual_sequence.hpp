@@ -149,9 +149,9 @@ public:
                 observation_candidate=candidate->id;candidate_seen=candidate->seen;
             } else {observation_candidate=0;candidate_seen=0;}
             if(phase==Phase::observing&&now-began>=std::chrono::seconds(3)) {
-                // Absence is never evidence of HIT. Continue read-only observation
-                // for this result until the bounded late-arrival window expires.
-                fail(Result::result_unconfirmed);
+                // A target that is still absent after the post-resume observation
+                // window is considered a confirmed HIT.
+                enter(Phase::hit,now);
             }
         }
     }

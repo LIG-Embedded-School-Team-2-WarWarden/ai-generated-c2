@@ -36,6 +36,20 @@ int gui_position_filter_entry() {
     check(equal(point(filter,state),point(once,state)),"query frequency cannot change filter confidence");
     check(state.targets[7].x==-1.95 && state.targets[7].seen==1.2,"raw measurement remains unchanged");
 
+    TargetPositionFilter velocity_filter;auto velocity_state=scene();
+    sample(velocity_state,1,{0,3,1});velocity_filter.update(velocity_state,{});
+    sample(velocity_state,1.2,{.2,3,1});velocity_filter.update(velocity_state,{});
+    sample(velocity_state,1.4,{.4,3,1});
+    const auto moving_point=velocity_filter.update(velocity_state,{}).at(0);
+    check(moving_point.velocity_valid&&moving_point.velocity.east>0&&
+        std::abs(moving_point.velocity.north)<1e-9&&std::abs(moving_point.velocity.up)<1e-9,
+        "two observed positions produce a world-axis velocity for lead aiming");
+    sample(velocity_state,1.5,{9,3,1});velocity_state.targets[7].track_state=2;
+    velocity_state.targets[7].detected=0;
+    const auto predicted_velocity=velocity_filter.update(velocity_state,{}).at(0);
+    check(predicted_velocity.velocity_valid&&predicted_velocity.velocity.east==moving_point.velocity.east,
+        "sender predictions cannot steer the observed velocity estimate");
+
     TargetPositionFilter noisy;auto noise_state=scene();double raw_squared=0,filtered_squared=0;
     uint32_t seed=12345;
     auto noise=[&] {seed=1664525u*seed+1013904223u;return (double(seed)/4294967296.-.5)*.1732050807568877;};

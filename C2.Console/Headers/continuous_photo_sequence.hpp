@@ -39,17 +39,22 @@ public:
     bool holds_batch() const {return running()||holds_batch_;}
     const std::vector<Entry>& plan() const {return plan_;}
 
-    Result start(const std::vector<BatchSequence::PhotoTarget>& targets,double extent_m,unsigned rings,
+    Result start(const std::vector<BatchSequence::PhotoTarget>& targets,double lead_seconds,unsigned repeats,
+                 double sweep_extent_m,double sample_now,
                  const Context& context,const Actions& actions) {
         if(holds_batch())return Result::device_busy;
         reset();
-        if(!context.batch_paused||targets.empty()||!ready(context)||(context.fcs.status->flags&14)||!std::isfinite(extent_m)||
-           extent_m<=0||extent_m>1||rings<1||rings>20)
+        if(!context.batch_paused||targets.empty()||!ready(context)||(context.fcs.status->flags&14)||
+           !std::isfinite(lead_seconds)||lead_seconds<0||lead_seconds>2||
+           !std::isfinite(sweep_extent_m)||sweep_extent_m<=0||sweep_extent_m>1||
+           !std::isfinite(sample_now)||repeats<1||repeats>20)
             return Result::invalid_request;
         for(const auto& target:targets)
             if(!target.id||!std::isfinite(target.pan)||!std::isfinite(target.tilt)||
-               !std::isfinite(target.distance_m)||target.distance_m<=.001)return Result::invalid_request;
-        plan_=make_plan(targets,extent_m,rings);
+               !std::isfinite(target.distance_m)||target.distance_m<=.001||
+               !std::isfinite(target.pan_rate)||!std::isfinite(target.tilt_rate)||
+               !std::isfinite(target.seen)||target.seen>sample_now)return Result::invalid_request;
+        plan_=make_plan(targets,lead_seconds,repeats,sweep_extent_m,sample_now);
         if(plan_.empty())return Result::invalid_request;
         phase_=Phase::running;
         return begin_move(context,actions);
@@ -71,7 +76,10 @@ public:
         if(status.flags&16) {terminate(Phase::failed,Result::device_fault,context,actions);return;}
         if(context.fcs.status_received_at<=status_floor_||(status.flags&2))return;
         const auto& entry=plan_[index_];
-        if(fcs_pan_error(status.azimuth,entry.pan)>.100001||std::abs(status.elevation-entry.tilt)>.100001)return;
+        // The FCS position feedback can settle up to 0.4 degrees from the
+        // requested tenth-degree command. Accept that hardware deadband while
+        // retaining a small floating-point comparison margin.
+        if(fcs_pan_error(status.azimuth,entry.pan)>.400001||std::abs(status.elevation-entry.tilt)>.400001)return;
         Result result;
         try {result=actions.capture();}
         catch(...) {terminate(Phase::failed,Result::device_error,context,actions);throw;}
@@ -89,21 +97,34 @@ public:
     }
 
     static std::vector<Entry> make_plan(const std::vector<BatchSequence::PhotoTarget>& targets,
-                                        double extent_m,unsigned rings) {
-        if(targets.empty()||!std::isfinite(extent_m)||extent_m<=0||rings<1)return {};
+                                        double lead_seconds,unsigned repeats,double sweep_extent_m,
+                                        double sample_now) {
+        if(targets.empty()||!std::isfinite(lead_seconds)||lead_seconds<0||lead_seconds>2||
+           !std::isfinite(sweep_extent_m)||sweep_extent_m<=0||sweep_extent_m>1||
+           !std::isfinite(sample_now)||repeats<1||repeats>20)return {};
         std::vector<Entry> result;
-        result.reserve(targets.size()*(1+8*rings));
-        for(const auto& target:targets)result.push_back(entry(target,0,0));
-        constexpr std::array<std::array<int,2>,8> directions{{
-            {{0,1}},{{1,1}},{{1,0}},{{1,-1}},{{0,-1}},{{-1,-1}},{{-1,0}},{{-1,1}}
-        }};
-        for(unsigned ring=1;ring<=rings;++ring) {
-            // This is a square coverage extent: diagonal positions apply the
-            // configured maximum independently on both axes.
-            const double extent=extent_m*ring/rings;
-            for(const auto& direction:directions)
-                for(const auto& target:targets)
-                    result.push_back(entry(target,extent*direction[0],extent*direction[1]));
+        result.reserve(targets.size()*repeats);
+        for(const auto& target:targets) {
+            if(!target.id||!std::isfinite(target.pan)||!std::isfinite(target.tilt)||
+               !std::isfinite(target.pan_rate)||!std::isfinite(target.tilt_rate)||
+               !std::isfinite(target.seen)||target.seen>sample_now)return {};
+            const double horizon=std::clamp(sample_now-target.seen+lead_seconds,0.,3.);
+            const double center_pan=target.pan_rate*horizon;
+            const double center_tilt=target.tilt_rate*horizon;
+            const double speed=std::hypot(target.pan_rate,target.tilt_rate);
+            constexpr double inverse_sqrt_two=.7071067811865475244;
+            // Rotate the observed image-plane motion by +45 degrees. With no
+            // trustworthy motion, fall back to the screen's rising diagonal.
+            const double sweep_pan=speed>1e-6?
+                (target.pan_rate-target.tilt_rate)/speed*inverse_sqrt_two:inverse_sqrt_two;
+            const double sweep_tilt=speed>1e-6?
+                (target.pan_rate+target.tilt_rate)/speed*inverse_sqrt_two:inverse_sqrt_two;
+            const double angular_extent=std::atan2(sweep_extent_m,target.distance_m)*180/std::numbers::pi;
+            for(unsigned repeat=0;repeat<repeats;++repeat) {
+                const double position=repeats==1?0.:2.*repeat/(repeats-1)-1.;
+                result.push_back(entry(target,center_pan+sweep_pan*angular_extent*position,
+                    center_tilt+sweep_tilt*angular_extent*position));
+            }
         }
         return result;
     }
@@ -118,15 +139,12 @@ private:
     Clock::time_point off_status_floor_{};
     bool holds_batch_{};
 
-    static Entry entry(const BatchSequence::PhotoTarget& target,double right_m,double up_m) {
+    static Entry entry(const BatchSequence::PhotoTarget& target,double pan_offset,double tilt_offset) {
         if(!std::isfinite(target.pan)||!std::isfinite(target.tilt)||
            !std::isfinite(target.distance_m)||target.distance_m<=.001)return {};
-        const auto degrees=[](double offset,double distance) {
-            return std::atan2(offset,distance)*180/std::numbers::pi;
-        };
-        double pan=std::round((target.pan+degrees(right_m,target.distance_m))*10)/10;
+        double pan=std::round((target.pan+pan_offset)*10)/10;
         pan=std::fmod(pan,360.);if(pan<0)pan+=360.;
-        const double tilt=std::round((target.tilt+degrees(up_m,target.distance_m))*10)/10;
+        const double tilt=std::round((target.tilt+tilt_offset)*10)/10;
         return {target.id,pan,tilt};
     }
     static bool ready(const Context& context) {

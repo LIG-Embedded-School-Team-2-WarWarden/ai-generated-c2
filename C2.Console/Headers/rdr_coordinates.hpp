@@ -15,6 +15,10 @@ struct CorrectedTarget {
     uint8_t status{2};
     BasePoint relative{}, world{}; // RDR-relative and WORLD (east,north,up), metres.
     bool valid{};
+    // Filter-derived world velocity. It is intentionally separate from the
+    // received RDR record: only repeated OBSERVED samples can make it valid.
+    BasePoint velocity{}; // east, north, up metres/second.
+    bool velocity_valid{};
 };
 // A finite coordinate can still be a sender prediction.  Keep that coordinate
 // available for display, but authorize control only from a recent OBSERVED

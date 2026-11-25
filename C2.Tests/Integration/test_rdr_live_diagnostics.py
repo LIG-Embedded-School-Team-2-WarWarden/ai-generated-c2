@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 import uuid
-from rdr_board import Board
+from rdr_board import Board, PREDICTION_LEASE_SECONDS
 from test_station import Gui, target_records, valid_count
 
 
@@ -143,20 +143,28 @@ def main():
             gui_xyz((1, 6, 4))
             board.observations = [(7, (-3, 2, 4), 0, 1800)]
             gui_xyz((3, 4, 2))
+            prediction_started = time.monotonic()
             board.track_state = 2
             board.observations = [(7, (-6, 3, 7), 0, 1800)]
             if args.filtered:
-                # Predictions expire after 1.5 s at the sender. Verify a
+                # Predictions expire after 2.5 s at the sender. Verify a
                 # filtered intermediate position, not convergence after expiry.
-                # A prediction remains visible but is deliberately not valid
-                # for assignment/control until an OBSERVED sample returns.
-                gui.wait(lambda frame: any(row[0] == 7 and row[8:10] == (5, 0) and
+                gui.wait(lambda frame: any(row[0] == 7 and row[8] == 5 and not row[9] and
                     3.01 < row[4] < 5.99 and 4.01 < row[5] < 6.99 and 2.01 < row[6] < 2.99
                     for row in target_records(frame)), timeout=1.3)
             else:
-                gui.wait(lambda frame: any(row[0] == 7 and row[8:10] == (5, 0) and
-                    all(abs(a-b) < 1e-5 for a, b in zip(row[4:7], (6, 7, 3)))
+                gui.wait(lambda frame: any(row[0] == 7 and row[8] == 5 and not row[9] and
+                    all(abs(value - expected) < .001 for value, expected in zip(row[4:7], (6, 7, 3)))
                     for row in target_records(frame)))
+            # The longer lease is display-only: the target remains pending and
+            # non-assignable until the sender changes it to LOST after 2.5 s.
+            remaining = prediction_started + PREDICTION_LEASE_SECONDS - .35 - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+            assert any(row[0] == 7 and row[8] == 5 and not row[9]
+                       for row in target_records(gui.frame()))
+            gui.wait(lambda frame: any(row[0] == 7 and row[8] == 2 and not row[9]
+                for row in target_records(frame)), timeout=1.0)
             # Restoring real observations retains the display history and
             # allows convergence without extending the prediction lifetime.
             board.track_state = 1

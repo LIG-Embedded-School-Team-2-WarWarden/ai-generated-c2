@@ -1,6 +1,8 @@
 #pragma once
 #include "rdr_coordinates.hpp"
+#include <algorithm>
 #include <array>
+#include <deque>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -71,6 +73,9 @@ class TargetPositionFilter {
         std::optional<BasePoint> motion_candidate;
         double candidate_seen{};
         unsigned motion_updates_left{};
+        BasePoint velocity{};
+        bool velocity_valid{};
+        std::deque<std::pair<double,BasePoint>> velocity_samples;
     };
     TargetPositionFilterConfig config_;
     std::array<double,3> measurement_variance_{}, process_variance_rate_{},motion_variance_rate_{};
@@ -174,7 +179,50 @@ public:
             if (!gui_point(estimate.world) || !gui_point(relative)) {
                 estimates_.erase(it);continue;
             }
+            // A one-second least-squares window uses only independent OBSERVED
+            // coordinates. This rejects one-frame jitter much better than a
+            // two-point derivative, and sender predictions can never steer it.
+            if (observed && (estimate.velocity_samples.empty() ||
+                raw.seen>estimate.velocity_samples.back().first)) {
+                if (!estimate.velocity_samples.empty() &&
+                    raw.seen-estimate.velocity_samples.back().first>reset_gap_s) {
+                    estimate.velocity_samples.clear();estimate.velocity_valid=false;
+                }
+                estimate.velocity_samples.push_back({raw.seen,point.world});
+                while(estimate.velocity_samples.size()>3 &&
+                      raw.seen-estimate.velocity_samples.front().first>1.)
+                    estimate.velocity_samples.pop_front();
+                if(estimate.velocity_samples.size()>=3 &&
+                   estimate.velocity_samples.back().first-estimate.velocity_samples.front().first>=.25) {
+                    double mean_time=0,mean_east=0,mean_north=0,mean_up=0;
+                    for(const auto& [time,position]:estimate.velocity_samples) {
+                        mean_time+=time;mean_east+=position.east;
+                        mean_north+=position.north;mean_up+=position.up;
+                    }
+                    const double count=double(estimate.velocity_samples.size());
+                    mean_time/=count;mean_east/=count;mean_north/=count;mean_up/=count;
+                    double denominator=0,east=0,north=0,up=0;
+                    for(const auto& [time,position]:estimate.velocity_samples) {
+                        const double centered=time-mean_time;
+                        denominator+=centered*centered;
+                        east+=centered*(position.east-mean_east);
+                        north+=centered*(position.north-mean_north);
+                        up+=centered*(position.up-mean_up);
+                    }
+                    const BasePoint measured_velocity{east/denominator,north/denominator,up/denominator};
+                    if(denominator>0&&gui_point(measured_velocity)) {
+                        if(estimate.velocity_valid) {
+                            constexpr double alpha=.5;
+                            estimate.velocity.east+=alpha*(measured_velocity.east-estimate.velocity.east);
+                            estimate.velocity.north+=alpha*(measured_velocity.north-estimate.velocity.north);
+                            estimate.velocity.up+=alpha*(measured_velocity.up-estimate.velocity.up);
+                        } else estimate.velocity=measured_velocity;
+                        estimate.velocity_valid=true;
+                    } else estimate.velocity_valid=false;
+                }
+            }
             point.world=estimate.world;point.relative=relative;
+            point.velocity=estimate.velocity;point.velocity_valid=estimate.velocity_valid;
         }
         return result;
     }

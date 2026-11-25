@@ -46,10 +46,17 @@ enum class Command : std::uint32_t {
     aim_batch_target=1203, pause_batch_scan=1204, fire_batch_target=1205,
     resume_batch_scan=1206, retry_batch_target=1207, stop_batch_capture=1208,
     start_continuous_photos=1210, get_continuous_photo_status=1211,
-    stop_continuous_photos=1212
+    stop_continuous_photos=1212,
+    // Automatic pass over the registered batch: normal EF03 aim then EF05 capture.
+    start_sequential_photos=1213, get_sequential_photo_status=1214,
+    stop_sequential_photos=1215
 };
 constexpr bool is_batch_command(std::uint32_t command) { return command>=1200 && command<=1208; }
 constexpr bool is_continuous_photo_command(std::uint32_t command) { return command>=1210 && command<=1212; }
+constexpr bool is_sequential_photo_command(std::uint32_t command) { return command>=1213 && command<=1215; }
+constexpr bool is_photo_sequence_command(std::uint32_t command) {
+    return is_continuous_photo_command(command)||is_sequential_photo_command(command);
+}
 enum class Result : std::uint32_t {
     success, invalid_request, asset_unavailable, not_assigned,
     already_assigned, not_supported, device_error,

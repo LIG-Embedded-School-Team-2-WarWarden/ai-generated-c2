@@ -16,8 +16,15 @@ public:
     using Result=ManualSequence::Result;
     using P=ManualSequence::Phase;
     enum class Phase { idle, stopping, paused, resuming, observing, fault };
-    struct Row { ManualSequence sequence; bool frozen{}; double photo_distance_m{},auto_pan{},auto_tilt{}; };
-    struct PhotoTarget { uint32_t id{}; double pan{}, tilt{}, distance_m{}; };
+    struct Row {
+        ManualSequence sequence; bool frozen{};
+        double photo_distance_m{},auto_pan{},auto_tilt{};
+        double photo_pan_rate{},photo_tilt_rate{},photo_seen{};
+    };
+    struct PhotoTarget {
+        uint32_t id{}; double pan{}, tilt{}, distance_m{};
+        double pan_rate{},tilt_rate{},seen{};
+    };
     struct Context {
         const c2::rdr::State& rdr;
         const c2::fcs::Snapshot& fcs;
@@ -49,7 +56,8 @@ public:
                !std::isfinite(it->second.photo_distance_m)||it->second.photo_distance_m<=.001)
                 return {};
             const auto& s=it->second.sequence;
-            targets.push_back({id,s.pan,s.tilt,it->second.photo_distance_m});
+            targets.push_back({id,s.pan,s.tilt,it->second.photo_distance_m,
+                it->second.photo_pan_rate,it->second.photo_tilt_rate,it->second.photo_seen});
         }
         return targets;
     }
@@ -187,6 +195,19 @@ public:
                 item.auto_pan=item.sequence.pan=angles.azimuth;
                 item.auto_tilt=item.sequence.tilt=angles.elevation;
                 item.photo_distance_m=std::hypot(vector[0],vector[1],vector[2]);
+                item.photo_pan_rate=item.photo_tilt_rate=0;
+                item.photo_seen=c.rdr.targets.at(uint16_t(key)).seen;
+                if(point->velocity_valid) {
+                    const auto future=fcs_target_angles(
+                        point->world.east+point->velocity.east,
+                        point->world.north+point->velocity.north,
+                        point->world.up+point->velocity.up,
+                        c.installation.rdr_position,c.installation.eff_position,
+                        c.installation.fcs_angle_offset_deg[0],c.installation.fcs_angle_offset_deg[1],
+                        c.installation.fcs_geometry);
+                    item.photo_pan_rate=std::remainder(future.azimuth-angles.azimuth,360.);
+                    item.photo_tilt_rate=future.elevation-angles.elevation;
+                }
                 item.sequence.capture_reference=c2::rdr::sensor_to_base(c.rdr.targets.at(uint16_t(key)));
                 item.frozen=true;
             }

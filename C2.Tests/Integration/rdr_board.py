@@ -12,6 +12,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+PREDICTION_LEASE_SECONDS = 2.5
 
 
 class Board:
@@ -84,7 +85,7 @@ class Board:
                         state = self.track_state
                         if state == 1:
                             self.last_observed = now
-                        elif state == 2 and now - self.last_observed > 1.5:
+                        elif state == 2 and now - self.last_observed > PREDICTION_LEASE_SECONDS:
                             state = 0  # Predictions never renew observation support.
                         self.socket.sendto(struct.pack('!4H3fhhHH4x', 0xDE03, self.tx, self.rx, ident,
                             *(xyz if state else (0, 0, 0)),

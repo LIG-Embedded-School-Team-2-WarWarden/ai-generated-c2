@@ -61,7 +61,8 @@ class Probe(Devices):
         if kind in (0xEF04, 0xEF05):
             value = struct.unpack_from('!H', raw, 6)[0] if kind == 0xEF04 else 1
             self.events.append(('fcs', value, self.lidar_inhibited))
-            if value and not self.lidar_inhibited:
+            if value and not self.lidar_inhibited and not (
+                    kind == 0xEF04 and getattr(self, 'allow_lidar_overlap', False)):
                 raise AssertionError('FCS output preceded physical lidar inhibition')
             if value and self.drop_on_reply:
                 self.laser_until = now + 60

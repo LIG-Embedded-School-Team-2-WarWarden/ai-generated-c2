@@ -35,7 +35,7 @@ def pan_error(a, b):
 
 
 class ContinuousPhotoProbe(HeldPoseProbe):
-    """Record EF03/EF04 ordering and the physical pose at every photo request."""
+    """Record EF03/EF04/EF05 ordering and the physical pose at every request."""
 
     def __init__(self):
         self.photo_events = []
@@ -52,6 +52,8 @@ class ContinuousPhotoProbe(HeldPoseProbe):
                 self.photo_events.append(("on" if enabled else "off",
                     self.elevation, self.azimuth,
                     self.target_elevation, self.target_azimuth, now))
+            elif kind == 0xEF05:
+                self.photo_events.append(("demo", self.elevation, self.azimuth, now))
         super()._fcs_request(raw, peer, now)
 
 
@@ -72,7 +74,7 @@ def run(executable):
             for name, port in (("rdr", board.rdr_port), ("fcs", board.fcs_port)):
                 config[name]["local"] = {"ip": "127.0.0.1", "port": 0}
                 config[name]["peer"] = {"ip": "127.0.0.1", "port": port}
-            config["camera"] = {"continuous_photo": [.05, 1, 0]}
+            config["camera"] = {"continuous_photo": [.5, 3, .05]}
             config_path = Path(directory) / "config.json"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             event_log = Path(directory) / "events.log"
@@ -125,7 +127,7 @@ def run(executable):
                 board.photo_events.clear()
 
             assert gui.command(1210) == 0
-            assert gui.last_response[6:9] == (18, 1, 0), gui.last_response
+            assert gui.last_response[6:9] == (6, 1, 0), gui.last_response
 
             # Read-only status remains available while every mutating batch
             # command is rejected for the full continuous-photo ownership.
@@ -138,7 +140,7 @@ def run(executable):
             while time.monotonic() < deadline:
                 assert gui.command(1211) == 0
                 total, phase, confirmed = gui.last_response[6:9]
-                assert total == 18 and 0 <= confirmed <= total
+                assert total == 6 and 0 <= confirmed <= total
                 confirmations.append(confirmed)
                 with board.lock:
                     acknowledged_or_pending = sum(event[0] == "on" for event in board.photo_events)
@@ -152,28 +154,27 @@ def run(executable):
                                       event_log.read_text(errors="replace")))
 
             assert confirmations == sorted(confirmations)
-            assert confirmations[-1] == 18
+            assert confirmations[-1] == 6
             with board.lock:
                 events = list(board.photo_events)
-            assert [event[0] for event in events] == [kind for _ in range(18)
+            assert [event[0] for event in events] == [kind for _ in range(6)
                 for kind in ("point", "on")] + ["off"], events
 
             points = [event for event in events if event[0] == "point"]
             photos = [event for event in events if event[0] == "on"]
-            assert len(points) == len(photos) == 18
+            assert len(points) == len(photos) == 6
             for photo in photos:
                 _, elevation, azimuth, target_elevation, target_azimuth, _ = photo
                 assert abs(elevation - target_elevation) <= .11, photo
                 assert pan_error(azimuth, target_azimuth) <= .11, photo
 
-            # Every square-coverage position must restart at object 1, then
-            # object 2. The two base angles are far enough apart to identify
-            # their subsequent offset commands without relying on ECS internals.
-            first_base, second_base = points[0][2], points[1][2]
+            # Each object sweeps low-left -> centre -> high-right when no
+            # reliable target velocity is available.
+            first_base, second_base = points[1][2], points[4][2]
             assert pan_error(first_base, second_base) > 5
-            for position in range(9):
-                assert pan_error(points[position * 2][2], first_base) < 1
-                assert pan_error(points[position * 2 + 1][2], second_base) < 1
+            for start in (0, 3):
+                assert points[start][2] < points[start + 1][2] < points[start + 2][2]
+                assert points[start][1] < points[start + 1][1] < points[start + 2][1]
             assert events[-1][0] == "off"
             assert board.laser_until <= time.monotonic()
 
@@ -200,6 +201,37 @@ def run(executable):
             assert any(event[0] == "on" for event in stopped_events)
             assert stopped_events[-1][0] == "off", stopped_events
             assert board.lidar_inhibited
+
+            # The centre-only sequential mode automates the old per-row
+            # aim/capture clicks while retaining registration order.
+            sequential_start = None
+            def start_sequential():
+                nonlocal sequential_start
+                with board.lock:
+                    attempt_start = len(board.photo_events)
+                result = gui.command(1213)
+                assert result in (0, 12), gui.last_response
+                if result == 0:
+                    sequential_start = attempt_start
+                return result == 0
+
+            wait_for(start_sequential)
+            assert sequential_start is not None
+
+            def sequential_complete():
+                assert gui.command(1214) == 0
+                total, phase, confirmed = gui.last_response[6:9]
+                assert total == 2 and 0 <= confirmed <= total
+                return phase == 2
+
+            wait_for(sequential_complete)
+            with board.lock:
+                sequential_events = list(board.photo_events[sequential_start:])
+            assert [event[0] for event in sequential_events] == [
+                "point", "demo", "point", "demo"], sequential_events
+            sequential_points = [event for event in sequential_events if event[0] == "point"]
+            assert pan_error(sequential_points[0][2], first_base) < 1
+            assert pan_error(sequential_points[1][2], second_base) < 1
             assert board.error is None, board.error
 
             gui.close()
@@ -208,7 +240,7 @@ def run(executable):
             process.stdin.flush()
             process.wait(timeout=10)
             assert process.returncode == 0, process.stderr.read()
-            print("PASS: continuous photos IPC, ordered coverage, FCS acknowledgements, stop/off; loopback only")
+            print("PASS: continuous and sequential photos IPC, ordered coverage, FCS acknowledgements, stop/off; loopback only")
     finally:
         if gui:
             gui.close()

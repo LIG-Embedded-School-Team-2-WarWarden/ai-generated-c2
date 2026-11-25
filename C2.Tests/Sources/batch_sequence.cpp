@@ -1,4 +1,5 @@
 #include "batch_sequence.hpp"
+#include "sequential_photo_sequence.hpp"
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -94,6 +95,43 @@ int batch_sequence_entry() {
         check(targets.size()==3&&targets[0].id==9&&targets[1].id==7&&targets[2].id==8);
         for(const auto& target:targets)check(target.distance_m>0);
     }
+    { // A measured world velocity becomes an angular intercept rate at freeze time.
+        Fixture x;
+        auto& moving=*std::find_if(x.points.begin(),x.points.end(),[](const auto& p){return p.id==7;});
+        moving.velocity={.5,0,0};moving.velocity_valid=true;
+        check(x.send(1201,7)==R::success);x.pause();
+        const auto targets=x.batch.photo_targets();
+        check(targets.size()==1&&targets[0].pan_rate>0&&targets[0].seen==100);
+    }
+    { // Sequential photos automate the ordinary EF03 -> EF05 batch path.
+        Fixture x;SequentialPhotoSequence sequence;
+        check(x.send(1201,8)==R::success);check(x.send(1201,7)==R::success);x.pause();
+        const auto targets=x.batch.photo_targets();
+        check(sequence.start(targets,x.batch,x.context())==R::success);
+        check(sequence.total()==2&&sequence.current_target()==8);
+        sequence.tick(x.batch,x.context(),x.actions);
+        check(x.moves==1&&x.batch.state(8)==110&&x.captures==0);
+        x.advance();sequence.tick(x.batch,x.context(),x.actions);
+        check(x.batch.state(8)==105&&x.captures==1);
+        x.f.status->flags=13;x.advance();sequence.tick(x.batch,x.context(),x.actions);
+        x.f.status->flags=1;x.advance();sequence.tick(x.batch,x.context(),x.actions);
+        check(sequence.confirmed()==1&&sequence.current_target()==7);
+        sequence.tick(x.batch,x.context(),x.actions);x.advance();sequence.tick(x.batch,x.context(),x.actions);
+        check(x.moves==2&&x.captures==2&&x.batch.state(7)==105);
+        x.f.status->flags=13;x.advance();sequence.tick(x.batch,x.context(),x.actions);
+        x.f.status->flags=1;x.advance();sequence.tick(x.batch,x.context(),x.actions);
+        check(sequence.phase()==SequentialPhotoSequence::Phase::completed&&sequence.confirmed()==2&&x.offs==0);
+    }
+    { // Stopping an active EF05 uses the existing batch EF04 OFF path.
+        Fixture x;SequentialPhotoSequence sequence;
+        check(x.send(1201,7)==R::success);x.pause();
+        check(sequence.start(x.batch.photo_targets(),x.batch,x.context())==R::success);
+        sequence.tick(x.batch,x.context(),x.actions);x.advance();sequence.tick(x.batch,x.context(),x.actions);
+        check(x.batch.state(7)==105&&sequence.stop(x.batch,x.context(),x.actions)==R::success&&x.offs==1);
+        check(x.batch.state(7)==112&&sequence.phase()==SequentialPhotoSequence::Phase::running);
+        x.f.status->flags=1;x.advance();sequence.tick(x.batch,x.context(),x.actions);
+        check(sequence.phase()==SequentialPhotoSequence::Phase::stopped);
+    }
     { // GUI angle overrides are per row and become the alignment reference.
         Fixture x;
         check(x.send(1201)==R::success&&x.send(1201,8)==R::success);
@@ -151,7 +189,7 @@ int batch_sequence_entry() {
         c2::rdr::Target fresh;fresh.id=8;fresh.seen=x.sample+.01;fresh.status=0;
         fresh.track_state=fresh.detected=1;fresh.pan=1800;fresh.tilt=0;fresh.x=.2;fresh.z=3;fresh.y=.5;
         x.r.targets[8]=fresh;x.advance();check(x.batch.state(8)==111);
-        x.advance(3);check(x.batch.state(7)==3&&x.batch.reason(7)==R::result_unconfirmed&&x.batch.state(8)==111&&x.batch.phase()==B::Phase::idle);
+        x.advance(3);check(x.batch.state(7)==108&&x.batch.reason(7)==R::success&&x.batch.state(8)==111&&x.batch.phase()==B::Phase::idle);
         x.points=c2::rdr::correct_targets(x.r,{});x.r.targets[8].seen=x.sample;
         check(x.send(1207,8)==R::success&&x.batch.state(8)==102);
         check(x.send(1207,8)==R::success);
@@ -159,20 +197,20 @@ int batch_sequence_entry() {
         check(x.send(1202,8)==R::success&&!x.batch.active()&&x.offs==1);
         check(x.send(1202,8)==R::success&&x.offs==1);
     }
-    for(double arrival:{3.245,3.284069}) { // Boundary case and measured first-arrival delay.
+    for(double arrival:{3.245,3.284069}) { // A first arrival after the deadline cannot undo HIT.
         Fixture x;check(x.send(1201)==R::success);
         const auto original=x.r.targets.at(7);
         x.pause();x.capture(7);x.resume();x.advance(3);
-        check(x.batch.state(7)==3&&x.batch.reason(7)==R::result_unconfirmed);
+        check(x.batch.state(7)==108&&x.batch.reason(7)==R::success);
         check(x.batch.phase()==B::Phase::idle&&!x.batch.take_off_request());
         auto fresh=original;fresh.id=20;fresh.x+=.01;fresh.seen=x.sample+arrival-3;
-        x.r.targets[20]=fresh;x.advance(arrival-3);check(x.batch.state(7)==3);
-        x.advance(.1);check(x.batch.state(7)==3); // unchanged packet
+        x.r.targets[20]=fresh;x.advance(arrival-3);check(x.batch.state(7)==108);
+        x.advance(.1);check(x.batch.state(7)==108); // unchanged packet
         x.r.targets[20].seen=x.sample+1;x.advance(1);
-        check(x.batch.state(7)==111&&x.batch.reason(7)==R::success);
+        check(x.batch.state(7)==108&&x.batch.reason(7)==R::success);
         check(!x.r.targets.contains(7)&&x.r.targets.contains(20)); // no ID alias
         check(x.moves==1&&x.captures==1&&x.resumes==1&&x.offs==0);
-        check(x.send(1207)==R::target_pending); // no implicit control reassignment
+        check(x.send(1207)==R::invalid_request); // confirmed HIT cannot be retried as ALIVE
     }
     { // Stop completion, not acceptance or a stale optical sample, opens the slot.
         Fixture x;check(x.send(1201)==R::success);check(x.send(1204)==R::success);

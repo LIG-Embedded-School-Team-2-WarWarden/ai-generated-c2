@@ -31,9 +31,10 @@ static void prediction_state_and_invalidation(){
     assert(target.status==0&&target.detected==0&&target.track_state==2);
     assert(target.pan==1800&&target.tilt==-123&&std::abs(target.x+.463)<1e-6);
     const auto receipt=target.seen;
-    // The 1.5 s sender prediction lease is not inferred from receipt time.
+    // The 2.5 s sender prediction lease is not inferred from receipt time.
     // Client-side expiry remains a separate 3 s missing-DE03 timeout.
     h.tick(receipt+2);assert(target.status==0&&target.track_state==2);
+    h.tick(receipt+2.75);assert(target.status==0&&target.track_state==2);
     h.tick(receipt+3.01);
     assert(target.status==2&&target.track_state==0&&target.detected==0);
     assert(target.x==0&&target.y==0&&target.z==0&&target.pan==-32768&&target.tilt==-32768);

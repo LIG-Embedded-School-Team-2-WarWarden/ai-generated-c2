@@ -60,11 +60,14 @@ def run(exe,fixture):
                 saved=path.read_bytes();stage(gui,20,r=(4,0,0))
                 assert gui.command(1114,target=20,xyz=(1,0,0))!=0 and path.read_bytes()==saved
                 assert gui.command(1112,target=20,xyz=(float('nan'),0,0))!=0
-                # An intervening manual trim invalidates the pending fit's basis.
+                # Once geometry is active, changing additive trim would apply a
+                # second calibration. Reject it without mutating the transaction.
                 read_model(gui,30);stage(gui,30)
-                assert gui.command(9,target=4,rdr=0,fcs=0,xyz=(3,-3,0))==0
-                assert gui.command(1114,target=30,xyz=(1,0,0))!=0
-                assert gui.command(9,target=4,rdr=0,fcs=0,xyz=offsets)==0
+                protected=path.read_bytes()
+                assert gui.command(9,target=4,rdr=0,fcs=0,xyz=(3,-3,0))!=0
+                assert read(gui,4)==offsets and path.read_bytes()==protected
+                assert gui.command(9,target=4,rdr=0,fcs=0,xyz=offsets)==0 # idempotent write
+                assert gui.command(1114,target=30,xyz=(1,0,0))==0
                 for distance in (3,7,12):
                     with board.lock:board.targets=[{'id':1001,'xyz':(-distance*.2,distance,distance*.3)}]
                     rows=target_records(gui.wait(lambda f:any(abs(r[4]+.2*distance)<.2 for r in target_records(f))))
@@ -110,7 +113,7 @@ def run(exe,fixture):
                 after_install=aim()
                 assert after_install==before_install,(before_install,after_install)
             assert board.error is None,board.error
-        print('PASS: RDR-local 3D geometry across distances and pointing paths, v2 persistence, atomic commit, trim preservation, restart/disable, installation independence')
+        print('PASS: RDR-local 3D geometry across distances and pointing paths, v2 persistence, atomic commit, trim double-apply protection, restart/disable, installation independence')
     finally:board.close()
 
 if __name__=='__main__':

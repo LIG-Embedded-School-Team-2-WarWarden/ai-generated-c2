@@ -24,8 +24,8 @@ struct InstallationConfig {
     FcsGeometry fcs_geometry{};
     std::array<double, 3> ranges{1.5, 10.0, 3.0};
     std::array<double, 3> rdr_fov{120.0, 45.0, 0.0};
-    // Per-axis camera coverage extent (metres), number of square rings, reserved zero.
-    std::array<double, 3> continuous_photo{0.05, 1.0, 0.0};
+    // Moving-target lead (seconds), sweep samples, diagonal half-extent (metres).
+    std::array<double, 3> continuous_photo{0.5, 3.0, 0.05};
     std::string observer_id{"RDR-1"}, effector_id{"FCS-1"};
 };
 
@@ -98,10 +98,11 @@ inline void validate_camera_settings(const InstallationConfig& value) {
         throw std::invalid_argument("RDR horizontal FOV must be (0,360], vertical (0,180] degrees");
     if (value.ranges[0]<0 || value.ranges[1]<value.ranges[0] || value.ranges[2]<0)
         throw std::invalid_argument("Distances must be nonnegative and RDR maximum >= minimum");
-    if (value.continuous_photo[0]<=0 || value.continuous_photo[0]>1 ||
+    if (value.continuous_photo[0]<0 || value.continuous_photo[0]>2 ||
         value.continuous_photo[1]<1 || value.continuous_photo[1]>20 ||
-        value.continuous_photo[1]!=std::floor(value.continuous_photo[1]) || value.continuous_photo[2]!=0)
-        throw std::invalid_argument("Continuous photo per-axis extent must be (0,1] metre, rings integer [1,20], reserved 0");
+        value.continuous_photo[1]!=std::floor(value.continuous_photo[1]) ||
+        value.continuous_photo[2]<=0 || value.continuous_photo[2]>1)
+        throw std::invalid_argument("Continuous photo lead must be [0,2] seconds, sweep samples integer [1,20], diagonal extent (0,1] metre");
 }
 
 inline InstallationConfig parse_installation_config(const nlohmann::json& config) {

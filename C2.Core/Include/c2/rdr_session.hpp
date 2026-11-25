@@ -246,7 +246,7 @@ public:
         for(auto it=state_.targets.begin();it!=state_.targets.end();){
             auto&t=it->second;
             if(now-t.seen>60&&!state_.excluded.count(it->first)){it=state_.targets.erase(it);continue;}
-            // Sender owns the 1.5 s prediction limit from its last observation
+            // Sender owns the 2.5 s prediction limit from its last observation
             // or point-cloud support. DE03 has no observation timestamp, so
             // receipt of a prediction must not be treated as a new observation.
             // This independent 3 s timeout only detects missing DE03 traffic.
