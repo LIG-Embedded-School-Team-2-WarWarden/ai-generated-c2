@@ -189,7 +189,7 @@ int batch_sequence_entry() {
         c2::rdr::Target fresh;fresh.id=8;fresh.seen=x.sample+.01;fresh.status=0;
         fresh.track_state=fresh.detected=1;fresh.pan=1800;fresh.tilt=0;fresh.x=.2;fresh.z=3;fresh.y=.5;
         x.r.targets[8]=fresh;x.advance();check(x.batch.state(8)==111);
-        x.advance(3);check(x.batch.state(7)==108&&x.batch.reason(7)==R::success&&x.batch.state(8)==111&&x.batch.phase()==B::Phase::idle);
+        x.advance(3);check(x.batch.state(7)==3&&x.batch.reason(7)==R::result_unconfirmed&&x.batch.state(8)==111&&x.batch.phase()==B::Phase::idle);
         x.points=c2::rdr::correct_targets(x.r,{});x.r.targets[8].seen=x.sample;
         check(x.send(1207,8)==R::success&&x.batch.state(8)==102);
         check(x.send(1207,8)==R::success);
@@ -197,20 +197,20 @@ int batch_sequence_entry() {
         check(x.send(1202,8)==R::success&&!x.batch.active()&&x.offs==1);
         check(x.send(1202,8)==R::success&&x.offs==1);
     }
-    for(double arrival:{3.245,3.284069}) { // A first arrival after the deadline cannot undo HIT.
+    for(double arrival:{3.245,3.284069}) { // Boundary case and measured first-arrival delay.
         Fixture x;check(x.send(1201)==R::success);
         const auto original=x.r.targets.at(7);
         x.pause();x.capture(7);x.resume();x.advance(3);
-        check(x.batch.state(7)==108&&x.batch.reason(7)==R::success);
+        check(x.batch.state(7)==3&&x.batch.reason(7)==R::result_unconfirmed);
         check(x.batch.phase()==B::Phase::idle&&!x.batch.take_off_request());
         auto fresh=original;fresh.id=20;fresh.x+=.01;fresh.seen=x.sample+arrival-3;
-        x.r.targets[20]=fresh;x.advance(arrival-3);check(x.batch.state(7)==108);
-        x.advance(.1);check(x.batch.state(7)==108); // unchanged packet
+        x.r.targets[20]=fresh;x.advance(arrival-3);check(x.batch.state(7)==3);
+        x.advance(.1);check(x.batch.state(7)==3); // unchanged packet
         x.r.targets[20].seen=x.sample+1;x.advance(1);
-        check(x.batch.state(7)==108&&x.batch.reason(7)==R::success);
+        check(x.batch.state(7)==111&&x.batch.reason(7)==R::success);
         check(!x.r.targets.contains(7)&&x.r.targets.contains(20)); // no ID alias
         check(x.moves==1&&x.captures==1&&x.resumes==1&&x.offs==0);
-        check(x.send(1207)==R::invalid_request); // confirmed HIT cannot be retried as ALIVE
+        check(x.send(1207)==R::target_pending); // no implicit control reassignment
     }
     { // Stop completion, not acceptance or a stale optical sample, opens the slot.
         Fixture x;check(x.send(1201)==R::success);check(x.send(1204)==R::success);
