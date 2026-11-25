@@ -109,9 +109,9 @@ def run(executable,scenario):
                         with board.lock:board.targets=[{'id':2001,'xyz':(-1.4,2.8,.35) if scenario=='new_id' else (1.4,4.8,.35)}]
                     send(1007);until(107)
                     if scenario in ('missing','different_location'):
-                        until(3)
+                        until(108)
                         gui.command(1010)
-                        assert gui.last_response[4]==24 and gui.last_response[7:9]==(3,7),gui.last_response
+                        assert gui.last_response[4]==0 and gui.last_response[7:9]==(108,8),gui.last_response
                     elif scenario=='new_id':
                         until(111) # Same position under a new ID is still occupied.
                         send(1009,8) # Missing original ID must not masquerade as FCS unavailable (2).
