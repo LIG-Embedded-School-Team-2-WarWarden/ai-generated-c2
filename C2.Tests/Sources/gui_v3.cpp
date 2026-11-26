@@ -181,14 +181,26 @@ int gui_v3_entry() {
         "disabled geometry preserves legacy formula");
     geometry.enabled=true;geometry.translation={.25,-.1,.05};geometry.rotation={.02,-.03,.04};
     const std::array<double,3> rdr_a{10,-2,1},fcs_a{-4,6,.5},rdr_b{-30,12,8},fcs_b{70,-25,-3};
+    geometry.rdr_anchor=rdr_a;geometry.fcs_anchor=fcs_a;
     const auto origin_a=fcs_gui_origin(rdr_a),origin_b=fcs_gui_origin(rdr_b);
     const std::array<double,3> local{1,5,.5};
     const auto local_a=fcs_target_angles(origin_a[0]+local[0],origin_a[1]+local[1],origin_a[2]+local[2],
         rdr_a,fcs_a,2.5,-3.5,geometry);
     const auto local_b=fcs_target_angles(origin_b[0]+local[0],origin_b[1]+local[1],origin_b[2]+local[2],
         rdr_b,fcs_b,2.5,-3.5,geometry);
-    check(local_a.azimuth==local_b.azimuth&&local_a.elevation==local_b.elevation,
-        "RDR-local 3D calibration must ignore absolute RDR/FCS installation coordinates");
+    check(local_a.azimuth!=local_b.azimuth||local_a.elevation!=local_b.elevation,
+        "3D calibration must apply the current RDR/FCS installation baseline");
+    const std::array<double,3> common_shift{3,-2,1};
+    std::array<double,3> rdr_shifted{},fcs_shifted{};
+    for(size_t i=0;i<3;++i) {
+        rdr_shifted[i]=rdr_a[i]+common_shift[i];
+        fcs_shifted[i]=fcs_a[i]+common_shift[i];
+    }
+    const auto shifted_origin=fcs_gui_origin(rdr_shifted);
+    const auto shifted=fcs_target_angles(shifted_origin[0]+local[0],shifted_origin[1]+local[1],
+        shifted_origin[2]+local[2],rdr_shifted,fcs_shifted,2.5,-3.5,geometry);
+    check(local_a.azimuth==shifted.azimuth&&local_a.elevation==shifted.elevation,
+        "common RDR/FCS relocation must preserve the calibrated pointing vector");
     geometry.enabled=false;
     const auto legacy_a=fcs_target_angles(origin_a[0]+local[0],origin_a[1]+local[1],origin_a[2]+local[2],
         rdr_a,fcs_a,2.5,-3.5,geometry);

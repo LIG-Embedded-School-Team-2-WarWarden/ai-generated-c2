@@ -33,7 +33,7 @@ def run(exe,fixture):
             config['rdr']['gui_kalman']={'enabled':False};path=runtime/'config.json';path.write_text(json.dumps(config))
             def read_model(gui,token):
                 out=[]
-                for cmd in (1110,1111):
+                for cmd in (1110,1111,1115,1116):
                     assert gui.command(cmd,target=token)==0,gui.last_response
                     out.append(struct.unpack('<3f',struct.pack('<3I',*gui.last_response[5:8])))
                 return out,gui.last_response[8]
@@ -41,7 +41,14 @@ def run(exe,fixture):
                 assert gui.command(1112,target=token,xyz=t)==0,gui.last_response
                 assert gui.command(1113,target=token,xyz=r)==0,gui.last_response
             with running(exe,runtime,path) as gui:
-                wait_for(lambda:gui.command(6,target=1)==0)
+                try:
+                    gui.wait(lambda frame:struct.unpack_from('<I',frame,44)[0]==1)
+                except AssertionError as error:
+                    raise AssertionError(f'RDR did not connect: error={board.error!r}, received={board.received}') from error
+                try:
+                    wait_for(lambda:gui.command(6,target=1)==0)
+                except AssertionError as error:
+                    raise AssertionError(f'RDR startup failed: {gui.last_response}') from error
                 gui.wait(lambda f:valid_count(f)>0);wait_for(lambda:gui.command(1102)==0)
                 assert gui.command(9,target=4,rdr=0,fcs=0,xyz=offsets)==0
                 assert read_model(gui,10)[1]==0
@@ -57,6 +64,10 @@ def run(exe,fixture):
                 assert json.loads(path.read_text())['installation']['camera']['fcs_geometry']['version']==2
                 actual,enabled=read_model(gui,20);assert enabled==1
                 for a,b in zip(actual,(translation,rotation)):assert all(abs(x-y)<1e-6 for x,y in zip(a,b))
+                def gui_origin(position): return (-position[1],position[0],position[2])
+                devices=json.loads(path.read_text())['installation']['devices']
+                assert all(abs(x-y)<1e-6 for x,y in zip(actual[2],gui_origin(devices['RDR-1']['position'])))
+                assert all(abs(x-y)<1e-6 for x,y in zip(actual[3],gui_origin(devices['FCS-1']['position'])))
                 saved=path.read_bytes();stage(gui,20,r=(4,0,0))
                 assert gui.command(1114,target=20,xyz=(1,0,0))!=0 and path.read_bytes()==saved
                 assert gui.command(1112,target=20,xyz=(float('nan'),0,0))!=0
@@ -96,6 +107,7 @@ def run(exe,fixture):
                 assert gui.command(1114,target=60,xyz=(0,0,0))==0
                 assert read_model(gui,70)[1]==0 and len(board.points)==count
                 stage(gui,70);assert gui.command(1114,target=70,xyz=(1,0,0))==0
+                gui.wait(lambda frame:struct.unpack_from('<I',frame,44)[0]==1)
                 wait_for(lambda:gui.command(6,target=1)==0)
                 rows=target_records(gui.wait(lambda f:valid_count(f)>0));target=rows[0][0]
                 def aim():
@@ -109,11 +121,11 @@ def run(exe,fixture):
                 before_install=aim()
                 assert gui.command(5,rdr=1,fcs=0,xyz=(3,-2,1))==0
                 assert gui.command(5,rdr=0,fcs=1,xyz=(-4,5,-1))==0
-                assert read_model(gui,80)[1]==1 # absolute installation never disables RDR-local geometry
+                assert read_model(gui,80)[1]==1 # installation correction preserves the fitted geometry
                 after_install=aim()
-                assert after_install==before_install,(before_install,after_install)
+                assert after_install!=before_install,(before_install,after_install)
             assert board.error is None,board.error
-        print('PASS: RDR-local 3D geometry across distances and pointing paths, v2 persistence, atomic commit, trim double-apply protection, restart/disable, installation independence')
+        print('PASS: RDR-local 3D geometry across distances and pointing paths, v2 persistence, atomic commit, trim double-apply protection, restart/disable, live installation baseline correction')
     finally:board.close()
 
 if __name__=='__main__':

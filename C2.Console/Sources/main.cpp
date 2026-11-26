@@ -480,15 +480,13 @@ int main(int argc, char** argv) {
         uint32_t geometry_token{},geometry_parts{};
         Clock::time_point geometry_deadline{};
         const auto same_geometry_basis=[](const InstallationConfig& a,const InstallationConfig& b) {
-            return a.fcs_angle_offset_deg==b.fcs_angle_offset_deg && a.fcs_geometry==b.fcs_geometry;
+            return a.fcs_angle_offset_deg==b.fcs_angle_offset_deg && a.fcs_geometry==b.fcs_geometry &&
+                a.rdr_position==b.rdr_position && a.eff_position==b.eff_position;
         };
         const auto pointing_basis_changed=[](const InstallationConfig& before,const InstallationConfig& after) {
-            if(before.fcs_angle_offset_deg!=after.fcs_angle_offset_deg || before.fcs_geometry!=after.fcs_geometry)
-                return true;
-            // Without a measured RDR-local transform, the legacy formula still
-            // needs the configured RDR/FCS installation baseline.
-            return !after.fcs_geometry.enabled &&
-                (before.rdr_position!=after.rdr_position || before.eff_position!=after.eff_position);
+            return before.fcs_angle_offset_deg!=after.fcs_angle_offset_deg ||
+                before.fcs_geometry!=after.fcs_geometry ||
+                before.rdr_position!=after.rdr_position || before.eff_position!=after.eff_position;
         };
         Clock::time_point last_fcs_status_sample{};
         bool have_fcs_busy_sample{};
@@ -1053,7 +1051,7 @@ int main(int argc, char** argv) {
                     else if((batch.active()||continuous_photos.holds_batch()||sequential_photos.holds_batch())&&(request.command==1||request.command==2||request.command==3||
                         request.command==5||request.command==6||request.command==9||
                         manual_command))result=gui::Result::device_busy;
-                    else if(request.command>=1110 && request.command<=1114) {
+                    else if(request.command>=1110 && request.command<=1116) {
                         if(request_ipc!=ipc || request.rdr_id!=1 || request.fcs_id!=1 || !request.target_id)
                             result=gui::Result::invalid_request;
                         else if(request.command==1110) {
@@ -1062,6 +1060,12 @@ int main(int argc, char** argv) {
                         } else if(request.target_id!=geometry_token)result=gui::Result::invalid_request;
                         else if(request.command==1111) {
                             geometry_values=geometry_snapshot.fcs_geometry.rotation;geometry_enabled=geometry_snapshot.fcs_geometry.enabled;
+                        } else if(request.command==1115) {
+                            geometry_values=fcs_gui_origin(geometry_snapshot.fcs_geometry.rdr_anchor);
+                            geometry_enabled=geometry_snapshot.fcs_geometry.enabled;
+                        } else if(request.command==1116) {
+                            geometry_values=fcs_gui_origin(geometry_snapshot.fcs_geometry.fcs_anchor);
+                            geometry_enabled=geometry_snapshot.fcs_geometry.enabled;
                         } else if(!same_geometry_basis(installation,geometry_snapshot))result=gui::Result::target_changed;
                         else if(manual.active() || batch.active() || continuous_photos.holds_batch() || sequential_photos.holds_batch() || target_id || (flags&14) || lidar_interlock.phase()!=LidarInterlock::Phase::idle)
                             result=gui::Result::device_busy;
@@ -1371,7 +1375,7 @@ int main(int argc, char** argv) {
                             installation_missing = false;
                             installation.fcs_geometry=saved.fcs_geometry;
                             if (position!=updated) {
-                                if(!saved.fcs_geometry.enabled)invalidate_installation_alignment();
+                                invalidate_installation_alignment();
                                 position=updated;
                                 if (rdr_position) {
                                     position_filter.reset();
@@ -1432,8 +1436,9 @@ int main(int argc, char** argv) {
                         else if (found==observation.targets.end()) result=gui::Result::target_pending;
                         else if (target_id && (target_id!=request.target_id || assignment!=3 || demo_requested)) result=gui::Result::already_assigned;
                         else {
-                            // With a measured 3D transform, point from RDR-local
-                            // coordinates. Absolute map installation affects only display.
+                            // Point from the configured installation positions. A measured
+                            // transform supplies optical alignment while its saved anchors
+                            // prevent the calibration-time baseline from being counted twice.
                             const auto vector=fcs_target_vector(found->east,found->north,found->up,
                                 installation.rdr_position,installation.eff_position,installation.fcs_geometry);
                             const auto angles=fcs_point_angles(vector[0],vector[1],vector[2],
@@ -1505,7 +1510,8 @@ int main(int argc, char** argv) {
                     response.target_id=std::bit_cast<uint32_t>(float(calibration_angles.elevation));
                     response.assignment=0; response.active=0;
                 }
-                if((request.command==1110 || request.command==1111) && result==gui::Result::success) {
+                if((request.command==1110 || request.command==1111 || request.command==1115 || request.command==1116) &&
+                    result==gui::Result::success) {
                     response.fcs_id=std::bit_cast<uint32_t>(float(geometry_values[0]));
                     response.target_id=std::bit_cast<uint32_t>(float(geometry_values[1]));
                     response.assignment=std::bit_cast<uint32_t>(float(geometry_values[2]));

@@ -4,8 +4,9 @@
 struct FcsGeometry {
     bool enabled{};
     // RDR-local point -> camera motor frame. Translation is metres and rotation
-    // is a Rodrigues vector in radians. Absolute map installation is not part
-    // of this transform.
+    // is a Rodrigues vector in radians. The anchors preserve the RDR/FCS
+    // installation baseline at calibration time so current installation edits
+    // can be applied without counting that baseline twice.
     std::array<double,3> translation{}, rotation{};
     std::array<double,3> rdr_anchor{}, fcs_anchor{};
     bool operator==(const FcsGeometry&) const = default;
@@ -40,7 +41,22 @@ inline std::array<double,3> fcs_target_vector(double world_east,double world_nor
     const FcsGeometry& geometry) {
     const auto origin=fcs_gui_origin(geometry.enabled?rdr_position:fcs_position);
     std::array<double,3> point{world_east-origin[0],world_north-origin[1],world_up-origin[2]};
-    return geometry.enabled?fcs_geometry_point(point,geometry):point;
+    if(!geometry.enabled)return point;
+
+    point=fcs_geometry_point(point,geometry);
+    const auto rdr=fcs_gui_origin(rdr_position),fcs=fcs_gui_origin(fcs_position);
+    const auto anchor_rdr=fcs_gui_origin(geometry.rdr_anchor);
+    const auto anchor_fcs=fcs_gui_origin(geometry.fcs_anchor);
+    // The fitted translation already contains the calibrated RDR-to-FCS
+    // baseline. Apply only the change from that baseline to the current,
+    // operator-configured installation positions.
+    std::array<double,3> baseline_change{
+        (rdr[0]-fcs[0])-(anchor_rdr[0]-anchor_fcs[0]),
+        (rdr[1]-fcs[1])-(anchor_rdr[1]-anchor_fcs[1]),
+        (rdr[2]-fcs[2])-(anchor_rdr[2]-anchor_fcs[2])};
+    baseline_change=fcs_geometry_rotate(baseline_change,geometry);
+    for(size_t i=0;i<3;++i)point[i]+=baseline_change[i];
+    return point;
 }
 inline FcsPointAngles fcs_target_angles(double world_east,double world_north,double world_up,
     const std::array<double,3>& rdr_position,const std::array<double,3>& fcs_position,
